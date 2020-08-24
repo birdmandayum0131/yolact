@@ -29,7 +29,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import cv2
 
-def str2bool(v):
+def str2bool(v): #判斷cmd輸入args的布林值
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
         return True
     elif v.lower() in ('no', 'false', 'f', 'n', '0'):
@@ -37,29 +37,29 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-def parse_args(argv=None):
+def parse_args(argv=None): 
     parser = argparse.ArgumentParser(
         description='YOLACT COCO Evaluation')
-    parser.add_argument('--trained_model',
+    parser.add_argument('--trained_model', #model weight的選擇 預設為ssd 300
                         default='weights/ssd300_mAP_77.43_v2.pth', type=str,
                         help='Trained state_dict file path to open. If "interrupt", this will open the interrupt file.')
-    parser.add_argument('--top_k', default=5, type=int,
+    parser.add_argument('--top_k', default=5, type=int, #預測top k個預測結果
                         help='Further restrict the number of predictions to parse')
-    parser.add_argument('--cuda', default=True, type=str2bool,
+    parser.add_argument('--cuda', default=True, type=str2bool, #是否使用GPU(cuda)
                         help='Use cuda to evaulate model')
-    parser.add_argument('--fast_nms', default=True, type=str2bool,
+    parser.add_argument('--fast_nms', default=True, type=str2bool, #是否使用論文提出之fast nms (default true)
                         help='Whether to use a faster, but not entirely correct version of NMS.')
-    parser.add_argument('--cross_class_nms', default=False, type=str2bool,
+    parser.add_argument('--cross_class_nms', default=False, type=str2bool, #nms計算時是否分class(default true)
                         help='Whether compute NMS cross-class or per-class.')
-    parser.add_argument('--display_masks', default=True, type=str2bool,
+    parser.add_argument('--display_masks', default=True, type=str2bool,#結果是否顯示mask
                         help='Whether or not to display masks over bounding boxes')
-    parser.add_argument('--display_bboxes', default=True, type=str2bool,
+    parser.add_argument('--display_bboxes', default=True, type=str2bool,#結果是否顯示bbox
                         help='Whether or not to display bboxes around masks')
-    parser.add_argument('--display_text', default=True, type=str2bool,
+    parser.add_argument('--display_text', default=True, type=str2bool,#結果是否顯示class
                         help='Whether or not to display text (class [score])')
-    parser.add_argument('--display_scores', default=True, type=str2bool,
+    parser.add_argument('--display_scores', default=True, type=str2bool,#結果是否顯示score
                         help='Whether or not to display scores in addition to classes')
-    parser.add_argument('--display', dest='display', action='store_true',
+    parser.add_argument('--display', dest='display', action='store_true', #????
                         help='Display qualitative results instead of quantitative ones.')
     parser.add_argument('--shuffle', dest='shuffle', action='store_true',
                         help='Shuffles the images when displaying them. Doesn\'t have much of an effect when display is off though.')
@@ -85,7 +85,7 @@ def parse_args(argv=None):
                         help='Do not output the status bar. This is useful for when piping to a file.')
     parser.add_argument('--display_lincomb', default=False, type=str2bool,
                         help='If the config uses lincomb masks, output a visualization of how those masks are created.')
-    parser.add_argument('--benchmark', default=False, dest='benchmark', action='store_true',
+    parser.add_argument('--benchmark', default=False, dest='benchmark', action='store_true', #同display mode  但不顯示出來
                         help='Equivalent to running display mode but without displaying an image.')
     parser.add_argument('--no_sort', default=False, dest='no_sort', action='store_true',
                         help='Do not sort images by hashed image ID.')
@@ -95,13 +95,17 @@ def parse_args(argv=None):
                         help='Outputs stuff for scripts/compute_mask.py.')
     parser.add_argument('--no_crop', default=False, dest='crop', action='store_false',
                         help='Do not crop output masks with the predicted bounding box.')
-    parser.add_argument('--image', default=None, type=str,
+    parser.add_argument('--image', default=None, type=str, #eval single image(path)
                         help='A path to an image to use for display.')
-    parser.add_argument('--images', default=None, type=str,
+    parser.add_argument('--images', default=None, type=str, #eval multiple images(path)
                         help='An input folder of images and output folder to save detected images. Should be in the format input->output.')
-    parser.add_argument('--video', default=None, type=str,
+    parser.add_argument('--video', default=None, type=str, #eval single video(path)
                         help='A path to a video to evaluate on. Passing in a number will use that index webcam.')
-    parser.add_argument('--video_multiframe', default=1, type=int,
+'''
+若輸入video play at higher fps
+可使用此config降低
+'''
+    parser.add_argument('--video_multiframe', default=1, type=int, 
                         help='The number of frames to evaluate in parallel to make videos play at higher fps.')
     parser.add_argument('--score_threshold', default=0, type=float,
                         help='Detections with a score under this threshold will not be considered. This currently only works in display mode.')
@@ -593,33 +597,48 @@ def badhash(x):
     return x
 
 def evalimage(net:Yolact, path:str, save_path:str=None):
+#***盡量由cv2 + numpy讀取image tensor
     frame = torch.from_numpy(cv2.imread(path)).cuda().float()
+'''
+FastBaseTransform is defined at utils.augmentations
+將image resize, image normalize製作成nn.module使之可以在GPU上加速
+'''
     batch = FastBaseTransform()(frame.unsqueeze(0))
-    preds = net(batch)
+    preds = net(batch)#預測結果
 
+'''
+將mask與origial image合成
+'''
     img_numpy = prep_display(preds, frame, None, None, undo_transform=False)
     
-    if save_path is None:
+    if save_path is None:#only display 模式
         img_numpy = img_numpy[:, :, (2, 1, 0)]
 
-    if save_path is None:
+    if save_path is None: #利用numpy來show
         plt.imshow(img_numpy)
         plt.title(path)
         plt.show()
-    else:
+    else: #save output image 模式
         cv2.imwrite(save_path, img_numpy)
 
 def evalimages(net:Yolact, input_folder:str, output_folder:str):
-    if not os.path.exists(output_folder):
+
+    if not os.path.exists(output_folder): #create output folder directory
         os.mkdir(output_folder)
 
     print()
-    for p in Path(input_folder).glob('*'): 
+    for p in Path(input_folder).glob('*'): #read all images in input folder
+'''
+determine output path
+'''
         path = str(p)
         name = os.path.basename(path)
         name = '.'.join(name.split('.')[:-1]) + '.png'
         out_path = os.path.join(output_folder, name)
 
+'''
+call evalimage
+'''
         evalimage(net, path, out_path)
         print(path + ' -> ' + out_path)
     print('Done.')
@@ -867,11 +886,23 @@ def evalvideo(net:Yolact, path:str, out_path:str=None):
     
     cleanup_and_exit()
 
+'''
+eval func
+train_mode待釐清
+'''
 def evaluate(net:Yolact, dataset, train_mode=False):
+'''
+確認nms之config
+prototype debug模式可以將prototype output出來
+'''
     net.detect.use_fast_nms = args.fast_nms
     net.detect.use_cross_class_nms = args.cross_class_nms
     cfg.mask_proto_debug = args.mask_proto_debug
-
+'''
+讀取輸入目標(image, images, video)
+確認輸出目標(image, images, video)
+現階段不支援COCO以外的"Fast Mask Re-scoring"(??????)
+'''
     # TODO Currently we do not support Fast Mask Re-scroing in evalimage, evalimages, and evalvideo
     if args.image is not None:
         if ':' in args.image:
@@ -882,7 +913,7 @@ def evaluate(net:Yolact, dataset, train_mode=False):
         return
     elif args.images is not None:
         inp, out = args.images.split(':')
-        evalimages(net, inp, out)
+        evalimages(net, inp, out) #func eval*** is defined above
         return
     elif args.video is not None:
         if ':' in args.video:
@@ -891,13 +922,21 @@ def evaluate(net:Yolact, dataset, train_mode=False):
         else:
             evalvideo(net, args.video)
         return
-
+'''
+see utils.functions
+MovingAverage object控制畫面上的window以及element數目(???????)
+***用max(num,1)處理divide by zero之情況***
+'''
     frame_times = MovingAverage()
-    dataset_size = len(dataset) if args.max_images < 0 else min(args.max_images, len(dataset))
-    progress_bar = ProgressBar(30, dataset_size)
+
+    dataset_size = len(dataset) if args.max_images < 0 else min(args.max_images, len(dataset)) #dataset size
+    progress_bar = ProgressBar(30, dataset_size) #see utils.funtions   simple progress bar object
 
     print()
 
+'''
+若非display mode則存檔
+'''
     if not args.display and not args.benchmark:
         # For each class and iou, stores tuples (score, isPositive)
         # Index ap_data[type][iouIdx][classIdx]
@@ -909,8 +948,15 @@ def evaluate(net:Yolact, dataset, train_mode=False):
     else:
         timer.disable('Load Data')
 
-    dataset_indices = list(range(len(dataset)))
-    
+    dataset_indices = list(range(len(dataset))) #create dataset indices
+
+'''
+作者之dataset在第一個image為最hardest
+但希望在每次python dictionary抽出判斷中都可以獲得相同結果
+而python 3.5 & 3.6之dictionary key之order定義不同
+因此利用此段程式handle不同 python version以及pycocotools之情況
+將dataset之order方法確定為deterministic shuffle
+'''    
     if args.shuffle:
         random.shuffle(dataset_indices)
     elif not args.no_sort:
@@ -926,12 +972,20 @@ def evaluate(net:Yolact, dataset, train_mode=False):
         dataset_indices.sort(key=lambda x: hashed[x])
 
     dataset_indices = dataset_indices[:dataset_size]
-
+'''
+Main eval snippet
+此階段已經確認eval目標不為image, images, video_fps
+預設為COCO Detection Dataset
+***現階段不認為會使用到  參考用
+'''
     try:
         # Main eval loop
         for it, image_idx in enumerate(dataset_indices):
             timer.reset()
-
+'''
+timer is defined at utils.timer
+***利用with去handle常見的try & catch情況
+'''
             with timer.env('Load Data'):
                 img, gt, gt_masks, h, w, num_crowd = dataset.pull_item(image_idx)
 
@@ -998,7 +1052,11 @@ def evaluate(net:Yolact, dataset, train_mode=False):
             timer.print_stats()
             avg_seconds = frame_times.get_avg()
             print('Average: %5.2f fps, %5.2f ms' % (1 / frame_times.get_avg(), 1000*avg_seconds))
-
+'''
+可支援KeyboardInterrupt
+usually ctrl+c
+ctrl+break ??
+'''
     except KeyboardInterrupt:
         print('Stopping...')
 
@@ -1048,7 +1106,10 @@ def print_maps(all_maps):
 
 if __name__ == '__main__':
     parse_args()
-
+'''
+load model
+似乎可以訓練中途eval ?
+'''
     if args.config is not None:
         set_cfg(args.config)
 
@@ -1057,51 +1118,68 @@ if __name__ == '__main__':
     elif args.trained_model == 'latest':
         args.trained_model = SavePath.get_latest('weights/', cfg.name)
 
-    if args.config is None:
+
+
+    if args.config is None:#無參數輸入之錯誤訊息
         model_path = SavePath.from_str(args.trained_model)
         # TODO: Bad practice? Probably want to do a name lookup instead.
         args.config = model_path.model_name + '_config'
         print('Config not specified. Parsed %s from the file name.\n' % args.config)
         set_cfg(args.config)
-
+'''
+object detection模式
+'''
     if args.detect:
         cfg.eval_mask_branch = False
 
+'''
+set dataset
+'''
     if args.dataset is not None:
         set_dataset(args.dataset)
 
+
+'''
+以下為eval之成果
+'''
     with torch.no_grad():
-        if not os.path.exists('results'):
+        if not os.path.exists('results'): #創建results資料夾
             os.makedirs('results')
 
-        if args.cuda:
-            cudnn.fastest = True
+        if args.cuda: #GPU模式
+            cudnn.fastest = True #??????待釐清
             torch.set_default_tensor_type('torch.cuda.FloatTensor')
         else:
             torch.set_default_tensor_type('torch.FloatTensor')
 
-        if args.resume and not args.display:
+        if args.resume and not args.display: #從檔案恢復結果
             with open(args.ap_data_file, 'rb') as f:
-                ap_data = pickle.load(f)
+                ap_data = pickle.load(f) #pickle為儲存資料之library  類似於json
             calc_map(ap_data)
             exit()
 
-        if args.image is None and args.video is None and args.images is None:
+        if args.image is None and args.video is None and args.images is None: #若eval目標全為空  default為COCO dataset
             dataset = COCODetection(cfg.dataset.valid_images, cfg.dataset.valid_info,
                                     transform=BaseTransform(), has_gt=cfg.dataset.has_gt)
             prep_coco_cats()
         else:
             dataset = None        
-
+'''
+create model
+loadweight
+'''
         print('Loading model...', end='')
         net = Yolact()
         net.load_weights(args.trained_model)
         net.eval()
         print(' Done.')
 
+
         if args.cuda:
             net = net.cuda()
-
+'''
+func evaluate is defined above
+'''
         evaluate(net, dataset)
 
 
