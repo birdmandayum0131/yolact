@@ -398,52 +398,117 @@ class Yolact(nn.Module):
 
     def __init__(self):
         super().__init__()
+'''
+object cfg is defined at data.config
+func construct_backbone is defined at backbone.py
+'''
+        self.backbone = construct_backbone(cfg.backbone) #default cfg = yolact_base_config (resnet101_backbone)
 
-        self.backbone = construct_backbone(cfg.backbone)
-
-        if cfg.freeze_bn:
+        if cfg.freeze_bn: #default false
             self.freeze_bn()
 
+'''
+load mask config
+default mask_type = lincomb
+'''
         # Compute mask_dim here and add it back to the config. Make sure Yolact's constructor is called early!
         if cfg.mask_type == mask_type.direct:
             cfg.mask_dim = cfg.mask_size**2
         elif cfg.mask_type == mask_type.lincomb:
+'''
+mask_proto_use_grid : Whether to add extra grid features to the proto_net input.
+?????
+default False
+'''
             if cfg.mask_proto_use_grid:
                 self.grid = torch.Tensor(np.load(cfg.mask_proto_grid_file))
                 self.num_grids = self.grid.size(0)
             else:
                 self.num_grids = 0
-
+'''
+mask_proto_src (int) : backbone中用來產生prototype的輸入feature map層之index
+default 0,
+The input layer to the mask prototype generation network.
+This is an index in backbone.layers.
+Use to use the image itself instead.
+'''
             self.proto_src = cfg.mask_proto_src
             
-            if self.proto_src is None: in_channels = 3
+            if self.proto_src is None: in_channels = 3 #in coco_base_config  is None
+'''
+default is resnet101+fpn
+num_features : fpn每一層之channel數
+The number of features to have in each FPN layer
+default 256
+'''
             elif cfg.fpn is not None: in_channels = cfg.fpn.num_features
             else: in_channels = self.backbone.channels[self.proto_src]
+'''
+加上grid features(上述)
+?????(待釐清)
+default 不加
+'''
             in_channels += self.num_grids
+'''
+func make_net is defined at utils.functions
+根據輸入channel以及網路格式製作nn.Module
+e.g. [(256, 3, {'padding': 1})] * 3 + [(None, -2, {}), (256, 3, {'padding': 1})] + [(32, 1, {})],
+proto net不使用relu
+改用其他activation func
 
+mask dim : prototype的數量(coefficient的數量)
+'''
             # The include_last_relu=false here is because we might want to change it to another function
             self.proto_net, cfg.mask_dim = make_net(in_channels, cfg.mask_proto_net, include_last_relu=False)
-
+'''
+加上proto mask bias
+多預測一個通用於所有prototype的coefficient
+default False
+mask_proto_bias (bool): Whether to include an extra coefficient that corresponds to a proto mask of all ones.
+'''
             if cfg.mask_proto_bias:
                 cfg.mask_dim += 1
 
-
+'''
+backbone中要用來輸入SSD網路之layer
+default list(range(1, 4)),
+backbone.channels 為backbone之輸出channel數
+定義在backbone.py中
+稍微複雜(需了解ResNet之構造)
+'''
         self.selected_layers = cfg.backbone.selected_layers
         src_channels = self.backbone.channels
-
+'''
+Fast Mask Re-scoring Network
+Yolact++之論文架構
+default false
+'''
         if cfg.use_maskiou:
             self.maskiou_net = FastMaskIoUNet()
-
+'''
+default resnet101+fpn(同上)
+根據config建立FPN module
+src_channels 更新為FPN多個selected layers之channel list
+#len(selected layers) * num_features(default 256)
+'''
         if cfg.fpn is not None:
             # Some hacky rewiring to accomodate the FPN
             self.fpn = FPN([src_channels[i] for i in self.selected_layers])
             self.selected_layers = list(range(len(self.selected_layers) + cfg.fpn.num_downsample))
             src_channels = [cfg.fpn.num_features] * len(self.selected_layers)
 
-
+'''
+initial prediction head之module list
+num_heads為有幾個SSD的prediction head = selected layers數量
+'''
         self.prediction_layers = nn.ModuleList()
         cfg.num_heads = len(self.selected_layers)
-
+'''
+對每個selected layers建立prediction head之nn.module
+並加入到module list中
+share_prediction_module 為share SSD之weight
+default True
+'''
         for idx, layer_idx in enumerate(self.selected_layers):
             # If we're sharing prediction module weights, have every module's parent be the first one
             parent = None
@@ -456,16 +521,26 @@ class Yolact(nn.Module):
                                     parent        = parent,
                                     index         = idx)
             self.prediction_layers.append(pred)
-
+'''
+是否使用class existence loss(??????)
+default False
+'''
         # Extra parameters for the extra losses
         if cfg.use_class_existence_loss:
             # This comes from the smallest layer selected
             # Also note that cfg.num_classes includes background
             self.class_existence_fc = nn.Linear(src_channels[-1], cfg.num_classes - 1)
-        
+'''
+是否使用semantic_segmentation_loss
+default True
+使用較前面的feature map去預測semantic segmentation
+訓練backbone網路(??????)
+'''
         if cfg.use_semantic_segmentation_loss:
             self.semantic_seg_conv = nn.Conv2d(src_channels[0], cfg.num_classes-1, kernel_size=1)
-
+'''
+建立eval用之detection module
+'''
         # For use in evaluation
         self.detect = Detect(cfg.num_classes, bkg_label=0, top_k=cfg.nms_top_k,
             conf_thresh=cfg.nms_conf_thresh, nms_thresh=cfg.nms_thresh)
@@ -675,7 +750,10 @@ class Yolact(nn.Module):
 
             return self.detect(pred_outs, self)
 
-
+'''
+作者用來testing的程式碼
+?????
+'''
 
 
 # Some testing code

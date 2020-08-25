@@ -901,7 +901,7 @@ prototype debug模式可以將prototype output出來
 '''
 讀取輸入目標(image, images, video)
 確認輸出目標(image, images, video)
-現階段不支援COCO以外的"Fast Mask Re-scoring"(??????)
+現階段不支援COCO以外的"Fast Mask Re-scoring"(yolact++之論文內容)
 '''
     # TODO Currently we do not support Fast Mask Re-scroing in evalimage, evalimages, and evalvideo
     if args.image is not None:
