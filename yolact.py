@@ -539,7 +539,10 @@ default True
         if cfg.use_semantic_segmentation_loss:
             self.semantic_seg_conv = nn.Conv2d(src_channels[0], cfg.num_classes-1, kernel_size=1)
 '''
-建立eval用之detection module
+is defined at layers/functions
+建立eval用之detection module XXXXXX
+!!!detection module為上面之prediction module list
+此為最後結合兩branch之過程(not nn.module)
 '''
         # For use in evaluation
         self.detect = Detect(cfg.num_classes, bkg_label=0, top_k=cfg.nms_top_k,
@@ -833,9 +836,17 @@ output.shape
 tuple (bbox_coords, class_confs, mask_output, prior_boxes)
 
 bbox_coords: [batch_size, conv_h*conv_w*num_priors, 4]
+預測每個anchor box(priors)之bounding box的[ center_x, center_y, width, height]偏移量
+
 class_confs: [batch_size, conv_h*conv_w*num_priors, num_classes]
+預測每個anchor box(priors)之分類的confidence
+
 mask_output: [batch_size, conv_h*conv_w*num_priors, mask_dim]
+預測每個anchor box(priors)的mask coefficients
+
 prior_boxes: [conv_h*conv_w*num_priors, 4]
+***每個anchor box(priors)的[ center_x, center_y, width, height]座標位址
+!!!非預測
 '''
 
 '''
