@@ -426,7 +426,7 @@ default False
             else:
                 self.num_grids = 0
 '''
-mask_proto_src (int) : backbone中用來產生prototype的輸入feature map層之index
+mask_proto_src (int) : backbone中用來產生prototype的輸入feature maps層之index
 default 0,
 The input layer to the mask prototype generation network.
 This is an index in backbone.layers.
@@ -470,7 +470,7 @@ mask_proto_bias (bool): Whether to include an extra coefficient that corresponds
                 cfg.mask_dim += 1
 
 '''
-backbone中要用來輸入SSD網路之layer
+***backbone之輸出layers(要用來輸入SSD網路之layers)
 default list(range(1, 4)),
 backbone.channels 為backbone之輸出channel數
 定義在backbone.py中
@@ -545,10 +545,16 @@ default True
         self.detect = Detect(cfg.num_classes, bkg_label=0, top_k=cfg.nms_top_k,
             conf_thresh=cfg.nms_conf_thresh, nms_thresh=cfg.nms_thresh)
 
+'''
+簡單定義儲存權重之method
+'''
     def save_weights(self, path):
         """ Saves the model's weights using compression because the file sizes were getting too big. """
         torch.save(self.state_dict(), path)
-    
+'''
+簡單定義儲存權重之method
+中途將過去版本之key name更新
+'''    
     def load_weights(self, path):
         """ Loads weights from a compressed save file. """
         state_dict = torch.load(path)
@@ -563,9 +569,16 @@ default True
                 if cfg.fpn is not None and int(key.split('.')[2]) >= cfg.fpn.num_downsample:
                     del state_dict[key]
         self.load_state_dict(state_dict)
-
+'''
+定義training stage時
+初始化weight之method
+'''
     def init_weights(self, backbone_path):
         """ Initialize weights for training. """
+'''
+利用backbone.py中定義之method
+先load過去backbone之weight
+'''
         # Initialize the backbone with the pretrained weights.
         self.backbone.init_backbone(backbone_path)
 
@@ -577,7 +590,13 @@ default True
                 if _x not in y:
                     return False
             return True
-
+'''
+xavier : 一種initial weight的方法(待了解)
+似乎在某些情況會出現問題
+因此加了很多條件
+若要使pytorch initial weight寫法更加穩定可以了解
+yolact / issue 127, 175, 292
+'''
         # Initialize the rest of the conv layers with xavier
         for name, module in self.named_modules():
             # See issue #127 for why we need such a complicated condition if the module is a WeakScriptModuleProxy
@@ -620,13 +639,19 @@ default True
                             module.bias.data[1:] = -np.log((1 - cfg.focal_loss_init_pi) / cfg.focal_loss_init_pi)
                     else:
                         module.bias.data.zero_()
-    
+'''
+在model的train()中
+將batch normalization layer凍結
+'''    
     def train(self, mode=True):
         super().train(mode)
 
         if cfg.freeze_bn:
             self.freeze_bn()
-
+'''
+將batch normalization layer凍結之method
+***pytorch官方寫法
+'''
     def freeze_bn(self, enable=False):
         """ Adapted from https://discuss.pytorch.org/t/how-to-train-with-frozen-batchnorm/12106/8 """
         for module in self.modules():
@@ -635,82 +660,206 @@ default True
 
                 module.weight.requires_grad = enable
                 module.bias.requires_grad = enable
-    
+'''
+重點*
+輸入size為[ batch size, channel(3), image height, image width]
+'''  
     def forward(self, x):
         """ The input should be of size [batch_size, 3, img_h, img_w] """
         _, _, img_h, img_w = x.size()
+'''
+***利用config物件來傳遞資訊
+'''
         cfg._tmp_img_h = img_h
         cfg._tmp_img_w = img_w
-        
+
+'''
+將feature extraction結果儲存到outs
+'''        
         with timer.env('backbone'):
             outs = self.backbone(x)
+'''
+------------------------------Feature Extraction----------------------------------------------
+'''
 
+
+'''
+ResNet-101 FPN
+default not None
+'''
         if cfg.fpn is not None:
             with timer.env('fpn'):
+'''
+就不使用self.selected_layers了
+因為fpn版本的self.selected_layers有做更動(加上downsampling layers)
+為獲得FPN的輸出
+利用backbone.selected_layers從outs(Feature Extraction的結果)
+選出需要放進FPN的feature maps
+outs為經過FPN後的feature maps
+'''
                 # Use backbone.selected_layers because we overwrote self.selected_layers
                 outs = [outs[i] for i in cfg.backbone.selected_layers]
                 outs = self.fpn(outs)
-
+'''
+------------------------------Feature Pyramid Network----------------------------------------------
+'''
+'''
+claim 變數 proto out (proto net之輸出)
+***lincomb 估計是Linear combination的意思
+若是only detector模式的話
+eval_mask_branch會是False(in eval.py)
+'''
         proto_out = None
         if cfg.mask_type == mask_type.lincomb and cfg.eval_mask_branch:
             with timer.env('proto'):
+'''
+#proto_src in coco_base_config is None
+將目前backbone之輸出根據proto_src之index
+將proto net之輸入取出
+#若是COCO base config則使用原始圖片作為輸入(???????)(原因待釐清)
+'''
                 proto_x = x if self.proto_src is None else outs[self.proto_src]
-                
+'''
+加上grid features(上述)
+?????(待釐清)
+default 不加
+'''
                 if self.num_grids > 0:
                     grids = self.grid.repeat(proto_x.size(0), 1, 1, 1)
                     proto_x = torch.cat([proto_x, grids], dim=1)
-
+'''
+proto_out 為proto net網路之輸出
+並且經過activation function
+default ReLU
+proto_out.shape = [batch, prototypes, image height, image width]
+'''
                 proto_out = self.proto_net(proto_x)
                 proto_out = cfg.mask_proto_prototype_activation(proto_out)
 
+'''
+mask_proto_prototypes_as_features 選項是給想利用proto net之輸出繼續做處理的情況
+還附有no gradient選項
+看起來並沒有很認真在維護這塊
+default False
+'''
                 if cfg.mask_proto_prototypes_as_features:
                     # Clone here because we don't want to permute this, though idk if contiguous makes this unnecessary
                     proto_downsampled = proto_out.clone()
 
                     if cfg.mask_proto_prototypes_as_features_no_grad:
                         proto_downsampled = proto_out.detach()
-                
+'''
+看起來想轉成numpy形式(??)
+#channel數為prototype數量
+proto_out.shape = [batch, image height, image width, prototypes]
+***permute大部分情況可以直接配contiguous
+'''  
                 # Move the features last so the multiplication is easy
                 proto_out = proto_out.permute(0, 2, 3, 1).contiguous()
-
+'''
+加上proto mask bias
+多預測一個通用於所有prototype的coefficient
+利用bias在原本的proto out輸出channel數量(prototypes)
+多加上一張全為1的channel作為bias
+default False
+mask_proto_bias (bool): Whether to include an extra coefficient that corresponds to a proto mask of all ones.
+'''
                 if cfg.mask_proto_bias:
                     bias_shape = [x for x in proto_out.size()]
                     bias_shape[-1] = 1
                     proto_out = torch.cat([proto_out, torch.ones(*bias_shape)], -1)
 
-
+'''
+------------------------------Prototype Generation Network----------------------------------------------
+'''
         with timer.env('pred_heads'):
+'''
+利用dictionary儲存輸出
+'''
             pred_outs = { 'loc': [], 'conf': [], 'mask': [], 'priors': [] }
-
+'''
+use_mask_scoring
+# Adds another branch to the netwok to predict Mask IoU.
+估計是yolact++之論文內容(??????)待釐清
+default False
+'''
             if cfg.use_mask_scoring:
                 pred_outs['score'] = []
-
+'''
+use_instance_coeff
+# Whether or not to have a separate branch whose sole purpose is to act as the coefficients for coeff_diversity_loss
+# Remember to turn on coeff_diversity_loss, or these extra coefficients won't do anything!
+# To see their effect, also remember to turn on use_coeff_nms.
+估計是yolact++之論文內容(??????)待釐清
+default False
+'''
             if cfg.use_instance_coeff:
                 pred_outs['inst'] = []
-            
+'''
+SSD部分
+先利用selected_layers從backbone中選出要輸入SSD之feature maps
+'''
             for idx, pred_layer in zip(self.selected_layers, self.prediction_layers):
                 pred_x = outs[idx]
-
+'''
+上述拿prototype作為輸入進來卷的選項
+意義不明(?????)
+default False
+'''
                 if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_prototypes_as_features:
                     # Scale the prototypes down to the current prediction layer's size and add it as inputs
                     proto_downsampled = F.interpolate(proto_downsampled, size=outs[idx].size()[2:], mode='bilinear', align_corners=False)
                     pred_x = torch.cat([pred_x, proto_downsampled], dim=1)
-
+'''
+共享SSD module權重的選項
+default True
+將第1個後的layer之parent設為第0個layer
+***共享權重+並行處理的example code
+'''
                 # A hack for the way dataparallel works
                 if cfg.share_prediction_module and pred_layer is not self.prediction_layers[0]:
                     pred_layer.parent = [self.prediction_layers[0]]
 
                 p = pred_layer(pred_x)
-                
+'''
+prediction layer之output為key value形式
+將key value一一對應至output dictionary中
+'''
                 for k, v in p.items():
                     pred_outs[k].append(v)
+'''
+------------------------------SSD Network----------------------------------------------
+output.shape
+tuple (bbox_coords, class_confs, mask_output, prior_boxes)
 
+bbox_coords: [batch_size, conv_h*conv_w*num_priors, 4]
+class_confs: [batch_size, conv_h*conv_w*num_priors, num_classes]
+mask_output: [batch_size, conv_h*conv_w*num_priors, mask_dim]
+prior_boxes: [conv_h*conv_w*num_priors, 4]
+'''
+
+'''
+將剛剛各selected_layers之output list整合
+對於pred_outs(dictionary)之所有 key, value('loc', 'conf', 'mask', 'priors')
+各種結果Concatenates成各個Tensor
+原pred_outs之各value.shape為[ num_selected_feature_maps * torch.tensor([bbox_coords or class_confs or mask_output or prior_boxes]).shape]
+維度-2對於四種output都一樣為 conv_h*conv_w*num_priors (每張feautre map上之example boxes數)
+'''
         for k, v in pred_outs.items():
             pred_outs[k] = torch.cat(v, -2)
-
+'''
+dictionary加入prototype輸出
+'''
         if proto_out is not None:
             pred_outs['proto'] = proto_out
+'''
+若處於Training mode
+判斷是否有特殊loss需要多計算結果
+class_existence_loss ????(default False)
 
+semantic_segmentation_loss (default True)
+訓練backbone網路
+'''
         if self.training:
             # For the extra loss functions
             if cfg.use_class_existence_loss:
@@ -720,10 +869,25 @@ default True
                 pred_outs['segm'] = self.semantic_seg_conv(outs[0])
 
             return pred_outs
+'''
+use_mask_scoring
+# Adds another branch to the netwok to predict Mask IoU.
+估計是yolact++之論文內容(??????)待釐清
+default False
+!!!竟然只用sigmoid(??????)
+'''
         else:
             if cfg.use_mask_scoring:
                 pred_outs['score'] = torch.sigmoid(pred_outs['score'])
-
+'''
+使用FAIR設計的focal loss
+寫法意外的簡單?????
+而且竟然放在eval()??????
+train.py中未提過focal loss ??????
+# Note: even though conf[0] exists, this mode doesn't train it so don't use it
+可能未使用過所以只是忽略帶過??????
+default False
+'''
             if cfg.use_focal_loss:
                 if cfg.use_sigmoid_focal_loss:
                     # Note: even though conf[0] exists, this mode doesn't train it so don't use it
@@ -738,13 +902,25 @@ default True
                 else:
                     pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
             else:
-
+'''
+use_objectness_score
+focal loss的額外選項
+# Use class[0] to be the objectness score and class[1:] to be the softmax predicted class.
+# Note: at the moment this is only implemented if use_focal_loss is on.
+只在focal loss使用時才implement
+但這裡也放一個的意義??????
+應該用不到
+default False
+'''
                 if cfg.use_objectness_score:
                     objectness = torch.sigmoid(pred_outs['conf'][:, :, 0])
                     
                     pred_outs['conf'][:, :, 1:] = (objectness > 0.10)[..., None] \
                         * F.softmax(pred_outs['conf'][:, :, 1:], dim=-1)
-                    
+'''
+看起來eval mode只會執行這段
+單純將confidence做softmax
+'''                    
                 else:
                     pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
 
