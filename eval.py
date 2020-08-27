@@ -140,16 +140,34 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
     """
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
     """
+
+'''
+將image "Tensor"
+回復backbone之normalize轉換
+以及backbone之substract means轉換
+並將其利用opencv resize回指定的size
+回傳numpy格式
+'''
     if undo_transform:
         img_numpy = undo_image_transformation(img, w, h)
         img_gpu = torch.Tensor(img_numpy).cuda()
     else:
         img_gpu = img / 255.0
         h, w, _ = img.shape
-    
+'''
+rescore部分為yolact++之論文內容
+default False
+'''
     with timer.env('Postprocess'):
         save = cfg.rescore_bbox
         cfg.rescore_bbox = True
+'''
+***要改應該要改這
+is defined at layers.output_utils
+接收prediction result以及原始image之size
+將prediction result轉換為合理的輸出
+回傳4個tensor(因為利用gpu加速)
+'''
         t = postprocess(dets_out, w, h, visualize_lincomb = args.display_lincomb,
                                         crop_masks        = args.crop,
                                         score_threshold   = args.score_threshold)
@@ -610,7 +628,9 @@ FastBaseTransform is defined at utils.augmentations
 將mask與origial image合成
 '''
     img_numpy = prep_display(preds, frame, None, None, undo_transform=False)
-    
+'''
+轉換為BGR
+'''    
     if save_path is None:#only display 模式
         img_numpy = img_numpy[:, :, (2, 1, 0)]
 
@@ -922,6 +942,9 @@ prototype debug模式可以將prototype output出來
         else:
             evalvideo(net, args.video)
         return
+'''
+-----------------------------若evaluate目標單純---------------------------------------
+'''
 '''
 see utils.functions
 MovingAverage object控制畫面上的window以及element數目(???????)
