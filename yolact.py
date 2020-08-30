@@ -541,14 +541,26 @@ class Yolact(nn.Module):
             self.semantic_seg_conv = nn.Conv2d(src_channels[0], cfg.num_classes-1, kernel_size=1)
         '''
         is defined at layers/functions
-        建立eval用之detection module XXXXXX
+        建立eval用之detection module (誤解)
         !!!detection module為上面之prediction module list
         此為最後結合兩branch之過程(not nn.module)
         '''
         # For use in evaluation
         self.detect = Detect(cfg.num_classes, bkg_label=0, top_k=cfg.nms_top_k,
             conf_thresh=cfg.nms_conf_thresh, nms_thresh=cfg.nms_thresh)
-
+        
+        if cfg.use_on_img_stream:
+            self.objectList = None
+            self.init_objList_mode = True
+    '''
+    image stream input模式時
+    設定第一個frame的object list 初始化工作
+    '''    
+    def init_objList_on(self, setOn):
+        if setOn: self.init_objList_mode = True
+        else: self.init_objList_mode = False
+        return self
+        
     '''
     簡單定義儲存權重之method
     '''
