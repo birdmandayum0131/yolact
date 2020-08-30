@@ -1,4 +1,4 @@
-from data import COCODetection, get_label_map, MEANS, COLORS
+from data import COCODetection, get_label_map, MEANS, COLORS, PALETTE
 from yolact import Yolact
 from utils.augmentations import BaseTransform, FastBaseTransform, Resize
 from utils.functions import MovingAverage, ProgressBar
@@ -41,23 +41,25 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description='YOLACT COCO Evaluation')
     parser.add_argument('--trained_model', #model weight的選擇 預設為ssd 300
-                        default='weights/ssd300_mAP_77.43_v2.pth', type=str,
+                        default='weights/yolact_im700_54_800000.pth', type=str,
                         help='Trained state_dict file path to open. If "interrupt", this will open the interrupt file.')
-    parser.add_argument('--top_k', default=5, type=int, #預測top k個預測結果
+    parser.add_argument('--top_k', default=15, type=int, #預測top k個預測結果
                         help='Further restrict the number of predictions to parse')
     parser.add_argument('--cuda', default=True, type=str2bool, #是否使用GPU(cuda)
                         help='Use cuda to evaulate model')
+    parser.add_argument('--output_davis_format', default=True, type=str2bool, #輸出8bit int 調色盤型式的png檔
+                        help='output 8bit palette int png file for DAVIS evaluate')
     parser.add_argument('--fast_nms', default=True, type=str2bool, #是否使用論文提出之fast nms (default true)
                         help='Whether to use a faster, but not entirely correct version of NMS.')
     parser.add_argument('--cross_class_nms', default=False, type=str2bool, #nms計算時是否分class(default true)
                         help='Whether compute NMS cross-class or per-class.')
     parser.add_argument('--display_masks', default=True, type=str2bool,#結果是否顯示mask
                         help='Whether or not to display masks over bounding boxes')
-    parser.add_argument('--display_bboxes', default=True, type=str2bool,#結果是否顯示bbox
+    parser.add_argument('--display_bboxes', default=False, type=str2bool,#結果是否顯示bbox
                         help='Whether or not to display bboxes around masks')
-    parser.add_argument('--display_text', default=True, type=str2bool,#結果是否顯示class
+    parser.add_argument('--display_text', default=False, type=str2bool,#結果是否顯示class
                         help='Whether or not to display text (class [score])')
-    parser.add_argument('--display_scores', default=True, type=str2bool,#結果是否顯示score
+    parser.add_argument('--display_scores', default=False, type=str2bool,#結果是否顯示score
                         help='Whether or not to display scores in addition to classes')
     parser.add_argument('--display', dest='display', action='store_true', #????
                         help='Display qualitative results instead of quantitative ones.')
@@ -101,13 +103,13 @@ def parse_args(argv=None):
                         help='An input folder of images and output folder to save detected images. Should be in the format input->output.')
     parser.add_argument('--video', default=None, type=str, #eval single video(path)
                         help='A path to a video to evaluate on. Passing in a number will use that index webcam.')
-'''
-若輸入video play at higher fps
-可使用此config降低
-'''
+    '''
+    若輸入video play at higher fps
+    可使用此config降低
+    '''
     parser.add_argument('--video_multiframe', default=1, type=int, 
                         help='The number of frames to evaluate in parallel to make videos play at higher fps.')
-    parser.add_argument('--score_threshold', default=0, type=float,
+    parser.add_argument('--score_threshold', default=0.45, type=float,
                         help='Detections with a score under this threshold will not be considered. This currently only works in display mode.')
     parser.add_argument('--dataset', default=None, type=str,
                         help='If specified, override the dataset specified in the config with this one (example: coco2017_dataset).')
@@ -141,33 +143,33 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
     """
 
-'''
-將image "Tensor"
-回復backbone之normalize轉換
-以及backbone之substract means轉換
-並將其利用opencv resize回指定的size
-回傳numpy格式
-'''
+    '''
+    將image "Tensor"
+    回復backbone之normalize轉換
+    以及backbone之substract means轉換
+    並將其利用opencv resize回指定的size
+    回傳numpy格式
+    '''
     if undo_transform:
         img_numpy = undo_image_transformation(img, w, h)
         img_gpu = torch.Tensor(img_numpy).cuda()
     else:
         img_gpu = img / 255.0
         h, w, _ = img.shape
-'''
-rescore部分為yolact++之論文內容
-default False
-'''
+    '''
+    rescore部分為yolact++之論文內容
+    default False
+    '''
     with timer.env('Postprocess'):
         save = cfg.rescore_bbox
         cfg.rescore_bbox = True
-'''
-***要改應該要改這
-is defined at layers.output_utils
-接收prediction result以及原始image之size
-將prediction result轉換為合理的輸出
-回傳4個tensor(因為利用gpu加速)
-'''
+        '''
+        ***要改應該要改這
+        is defined at layers.output_utils
+        接收prediction result以及原始image之size
+        將prediction result轉換為合理的輸出
+        回傳4個tensor(因為利用gpu加速)
+        '''
         t = postprocess(dets_out, w, h, visualize_lincomb = args.display_lincomb,
                                         crop_masks        = args.crop,
                                         score_threshold   = args.score_threshold)
@@ -204,18 +206,31 @@ is defined at layers.output_utils
                 color = torch.Tensor(color).to(on_gpu).float() / 255.
                 color_cache[on_gpu][color_idx] = color
             return color
-
+    if args.output_davis_format and cfg.eval_mask_branch:
+        
+        
+        paletteMask = np.zeros(( 1, h, w, 1)).astype(np.uint8)
+        if num_dets_to_consider > 0:
+            remainingMask = np.ones(( 1, h, w, 1)).astype(np.uint8)
+            masks = masks[:num_dets_to_consider, :, :, None].cpu().numpy().astype(np.uint8)
+            for i in range(num_dets_to_consider):
+                paletteMask = paletteMask + remainingMask*masks[i]*(i+1)
+                remainingMask = remainingMask - ( remainingMask * masks[i] )
+        return paletteMask
     # First, draw the masks on the GPU where we can do it really fast
     # Beware: very fast but possibly unintelligible mask-drawing code ahead
     # I wish I had access to OpenGL or Vulkan but alas, I guess Pytorch tensor operations will have to suffice
     if args.display_masks and cfg.eval_mask_branch and num_dets_to_consider > 0:
+        
         # After this, mask is of size [num_dets, h, w, 1]
         masks = masks[:num_dets_to_consider, :, :, None]
-        
+
         # Prepare the RGB images for each mask given their color (size [num_dets, h, w, 1])
         colors = torch.cat([get_color(j, on_gpu=img_gpu.device.index).view(1, 1, 1, 3) for j in range(num_dets_to_consider)], dim=0)
         masks_color = masks.repeat(1, 1, 1, 3) * colors * mask_alpha
-
+        '''
+        讓背景為1，前景為(1-mask_alpha)
+        '''
         # This is 1 everywhere except for 1-mask_alpha where the mask is
         inv_alph_masks = masks * (-mask_alpha) + 1
         
@@ -617,20 +632,20 @@ def badhash(x):
 def evalimage(net:Yolact, path:str, save_path:str=None):
 #***盡量由cv2 + numpy讀取image tensor
     frame = torch.from_numpy(cv2.imread(path)).cuda().float()
-'''
-FastBaseTransform is defined at utils.augmentations
-將image resize, image normalize製作成nn.module使之可以在GPU上加速
-'''
+    '''
+    FastBaseTransform is defined at utils.augmentations
+    將image resize, image normalize製作成nn.module使之可以在GPU上加速
+    '''
     batch = FastBaseTransform()(frame.unsqueeze(0))
     preds = net(batch)#預測結果
 
-'''
-將mask與origial image合成
-'''
+    '''
+    將mask與origial image合成
+    '''
     img_numpy = prep_display(preds, frame, None, None, undo_transform=False)
-'''
-轉換為BGR
-'''    
+    '''
+    轉換為BGR
+    '''    
     if save_path is None:#only display 模式
         img_numpy = img_numpy[:, :, (2, 1, 0)]
 
@@ -639,7 +654,12 @@ FastBaseTransform is defined at utils.augmentations
         plt.title(path)
         plt.show()
     else: #save output image 模式
-        cv2.imwrite(save_path, img_numpy)
+        if args.output_davis_format:
+            paletteImg = Image.fromarray(np.squeeze(img_numpy), mode="P")
+            paletteImg.putpalette(PALETTE)
+            paletteImg.save(save_path)
+        else:
+            cv2.imwrite(save_path, img_numpy)
 
 def evalimages(net:Yolact, input_folder:str, output_folder:str):
 
@@ -648,17 +668,17 @@ def evalimages(net:Yolact, input_folder:str, output_folder:str):
 
     print()
     for p in Path(input_folder).glob('*'): #read all images in input folder
-'''
-determine output path
-'''
+        '''
+        determine output path
+        '''
         path = str(p)
         name = os.path.basename(path)
         name = '.'.join(name.split('.')[:-1]) + '.png'
         out_path = os.path.join(output_folder, name)
 
-'''
-call evalimage
-'''
+        '''
+        call evalimage
+        '''
         evalimage(net, path, out_path)
         print(path + ' -> ' + out_path)
     print('Done.')
@@ -911,45 +931,45 @@ eval func
 train_mode待釐清
 '''
 def evaluate(net:Yolact, dataset, train_mode=False):
-'''
-確認nms之config
-prototype debug模式可以將prototype output出來
-'''
+    '''
+    確認nms之config
+    prototype debug模式可以將prototype output出來
+    '''
     net.detect.use_fast_nms = args.fast_nms
     net.detect.use_cross_class_nms = args.cross_class_nms
     cfg.mask_proto_debug = args.mask_proto_debug
-'''
-讀取輸入目標(image, images, video)
-確認輸出目標(image, images, video)
-現階段不支援COCO以外的"Fast Mask Re-scoring"(yolact++之論文內容)
-'''
+    '''
+    讀取輸入目標(image, images, video)
+    確認輸出目標(image, images, video)
+    現階段不支援COCO以外的"Fast Mask Re-scoring"(yolact++之論文內容)
+    '''
     # TODO Currently we do not support Fast Mask Re-scroing in evalimage, evalimages, and evalvideo
     if args.image is not None:
-        if ':' in args.image:
-            inp, out = args.image.split(':')
+        if '::' in args.image:
+            inp, out = args.image.split('::')
             evalimage(net, inp, out)
         else:
             evalimage(net, args.image)
         return
     elif args.images is not None:
-        inp, out = args.images.split(':')
+        inp, out = args.images.split('::')
         evalimages(net, inp, out) #func eval*** is defined above
         return
     elif args.video is not None:
-        if ':' in args.video:
-            inp, out = args.video.split(':')
+        if '::' in args.video:
+            inp, out = args.video.split('::')
             evalvideo(net, inp, out)
         else:
             evalvideo(net, args.video)
         return
-'''
------------------------------若evaluate目標單純---------------------------------------
-'''
-'''
-see utils.functions
-MovingAverage object控制畫面上的window以及element數目(???????)
-***用max(num,1)處理divide by zero之情況***
-'''
+    '''
+    -----------------------------若evaluate目標單純---------------------------------------
+    '''
+    '''
+    see utils.functions
+    MovingAverage object控制畫面上的window以及element數目(???????)
+    ***用max(num,1)處理divide by zero之情況***
+    '''
     frame_times = MovingAverage()
 
     dataset_size = len(dataset) if args.max_images < 0 else min(args.max_images, len(dataset)) #dataset size
@@ -957,9 +977,9 @@ MovingAverage object控制畫面上的window以及element數目(???????)
 
     print()
 
-'''
-若非display mode則存檔
-'''
+    '''
+    若非display mode則存檔
+    '''
     if not args.display and not args.benchmark:
         # For each class and iou, stores tuples (score, isPositive)
         # Index ap_data[type][iouIdx][classIdx]
@@ -973,13 +993,13 @@ MovingAverage object控制畫面上的window以及element數目(???????)
 
     dataset_indices = list(range(len(dataset))) #create dataset indices
 
-'''
-作者之dataset在第一個image為最hardest
-但希望在每次python dictionary抽出判斷中都可以獲得相同結果
-而python 3.5 & 3.6之dictionary key之order定義不同
-因此利用此段程式handle不同 python version以及pycocotools之情況
-將dataset之order方法確定為deterministic shuffle
-'''    
+    '''
+    作者之dataset在第一個image為最hardest
+    但希望在每次python dictionary抽出判斷中都可以獲得相同結果
+    而python 3.5 & 3.6之dictionary key之order定義不同
+    因此利用此段程式handle不同 python version以及pycocotools之情況
+    將dataset之order方法確定為deterministic shuffle
+    '''    
     if args.shuffle:
         random.shuffle(dataset_indices)
     elif not args.no_sort:
@@ -995,20 +1015,20 @@ MovingAverage object控制畫面上的window以及element數目(???????)
         dataset_indices.sort(key=lambda x: hashed[x])
 
     dataset_indices = dataset_indices[:dataset_size]
-'''
-Main eval snippet
-此階段已經確認eval目標不為image, images, video_fps
-預設為COCO Detection Dataset
-***現階段不認為會使用到  參考用
-'''
+    '''
+    Main eval snippet
+    此階段已經確認eval目標不為image, images, video_fps
+    預設為COCO Detection Dataset
+    ***現階段不認為會使用到  參考用
+    '''
     try:
         # Main eval loop
         for it, image_idx in enumerate(dataset_indices):
             timer.reset()
-'''
-timer is defined at utils.timer
-***利用with去handle常見的try & catch情況
-'''
+            '''
+            timer is defined at utils.timer
+            ***利用with去handle常見的try & catch情況
+            '''
             with timer.env('Load Data'):
                 img, gt, gt_masks, h, w, num_crowd = dataset.pull_item(image_idx)
 
@@ -1075,11 +1095,11 @@ timer is defined at utils.timer
             timer.print_stats()
             avg_seconds = frame_times.get_avg()
             print('Average: %5.2f fps, %5.2f ms' % (1 / frame_times.get_avg(), 1000*avg_seconds))
-'''
-可支援KeyboardInterrupt
-usually ctrl+c
-ctrl+break ??
-'''
+        '''
+        可支援KeyboardInterrupt
+        usually ctrl+c
+        ctrl+break ??
+        '''
     except KeyboardInterrupt:
         print('Stopping...')
 
@@ -1129,10 +1149,10 @@ def print_maps(all_maps):
 
 if __name__ == '__main__':
     parse_args()
-'''
-load model
-似乎可以訓練中途eval ?
-'''
+    '''
+    load model
+    似乎可以訓練中途eval ?
+    '''
     if args.config is not None:
         set_cfg(args.config)
 
@@ -1149,22 +1169,22 @@ load model
         args.config = model_path.model_name + '_config'
         print('Config not specified. Parsed %s from the file name.\n' % args.config)
         set_cfg(args.config)
-'''
-object detection模式
-'''
+    '''
+    object detection模式
+    '''
     if args.detect:
         cfg.eval_mask_branch = False
 
-'''
-set dataset
-'''
+    '''
+    set dataset
+    '''
     if args.dataset is not None:
         set_dataset(args.dataset)
 
 
-'''
-以下為eval之成果
-'''
+    '''
+    以下為eval之成果
+    '''
     with torch.no_grad():
         if not os.path.exists('results'): #創建results資料夾
             os.makedirs('results')
@@ -1187,10 +1207,10 @@ set dataset
             prep_coco_cats()
         else:
             dataset = None        
-'''
-create model
-loadweight
-'''
+        '''
+        create model
+        loadweight
+        '''
         print('Loading model...', end='')
         net = Yolact()
         net.load_weights(args.trained_model)
@@ -1200,9 +1220,9 @@ loadweight
 
         if args.cuda:
             net = net.cuda()
-'''
-func evaluate is defined above
-'''
+        '''
+        func evaluate is defined above
+        '''
         evaluate(net, dataset)
 
 
