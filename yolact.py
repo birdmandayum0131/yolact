@@ -947,8 +947,21 @@ class Yolact(nn.Module):
                     單純將confidence做softmax
                     '''   
                     pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
-
-            return self.detect(pred_outs, self)
+            
+            preds = self.detect(pred_outs, self)
+            '''
+            若是image stream input
+            則預設batch size = 1  #i.e. len(preds) = 1
+            '''
+            if cfg.use_on_img_stream:
+                dets = preds[0]
+                dets = dets['detection']
+                masks = dets['mask']
+                if self.init_objList_mode:
+                    self.objectList = masks.clone()
+                    preds[0]['detection']['id'] = list(range(len(objectList)))
+                    
+            return preds
 
 '''
 作者用來testing的程式碼

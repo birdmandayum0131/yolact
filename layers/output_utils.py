@@ -65,7 +65,6 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
         
         if visualize_lincomb:
             display_lincomb(proto_data, masks)
-
         masks = proto_data @ masks.t()
         masks = cfg.mask_proto_mask_activation(masks)
 
