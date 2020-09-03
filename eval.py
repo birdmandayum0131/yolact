@@ -212,7 +212,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                 color = torch.Tensor(color).to(on_gpu).float() / 255.
                 color_cache[on_gpu][color_idx] = color
             return color
-    if args.output_davis_format and cfg.eval_mask_branch:
+    if args.output_davis_format and cfg.eval_mask_branch and cfg.use_on_img_stream:
         
         
         paletteMask = np.zeros(( 1, h, w, 1)).astype(np.uint8)
