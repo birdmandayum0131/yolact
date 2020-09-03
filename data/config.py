@@ -701,6 +701,7 @@ yolact_base_config = coco_base_config.copy({
 
     'crowd_iou_threshold': 0.7,
     
+    #32維，range(-1,1)的兩向量距離會在range(0,11.3137)之間
     'coefficients_dist_threshold':11.3137,
 
     'use_semantic_segmentation_loss': True,

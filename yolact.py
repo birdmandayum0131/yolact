@@ -556,10 +556,7 @@ class Yolact(nn.Module):
     image stream input模式時
     設定第一個frame的object list 初始化工作
     '''    
-    def init_objList_on(self, setOn):
-        if setOn: self.init_objList_mode = True
-        else: self.init_objList_mode = False
-        return self
+    #已將此處轉移至cfg
         
     '''
     簡單定義儲存權重之method
@@ -947,66 +944,17 @@ class Yolact(nn.Module):
                     單純將confidence做softmax
                     '''   
                     pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
-            
-            preds = self.detect(pred_outs, self)
             '''
-            若是image stream input
-            則預設batch size = 1  #i.e. len(preds) = 1
+            由於此時的masks.shape = torch.Size([100, 32])
+            尚未過濾class confidence score, top k results
+            因此將code轉移至eval.py一起進行
             '''
-            if cfg.use_on_img_stream:
-                dets = preds[0]
-                dets = dets['detection']
-                masks = dets['mask']
-                if self.init_objList_mode:
-                    '''
-                    初始化模式
-                    將第一個frame所偵測到mask coefficients(還沒進行class score過濾)
-                    儲存進objectList中
-                    K = number of masks
-                    shape = torch.Size([K,32])
-                    '''
-                    self.objectList = masks.clone()
-                    preds[0]['detection']['id'] = torch.tensor(range(len(objectList)))
-                else:
-                    '''
-                    先計算K個detection對objectList中N個object在mask coefficients的Euclidean Distance
-                    #由於每個coefficient的value介於range(-1,1)
-                    #因此distance的value會介於range(0, 11.3137) #(1-(-1))^2 * 32 = 11.3137^2
-                    KtoNdist.shape = torch.Size([K, N])
-                    '''
-                    KtoNdist = torch.cdist(masks, self.objectList)
-                    '''
-                    計算最短距離的distance以及indices
-                    使用dim = 1使得對每個coefficients in K
-                    計算objectList中N個object裡最短的距離
-                    min_dist.shape = min_indices.shape = torch.Size([K])
-                    ***此處未來可用解Assignment problem的algorithm來優化(e.g. Hungarian algorithm)
-                    '''
-                    min_dist, min_indices = torch.min(KtoNdist, dim = 1)
-                    '''
-                    依據threshold來確定是否是同一object
-                    ***未來可優化threshold
-                    isNotInList = booleanTensor(same size as min_dist)
-                    '''
-                    isNotInList = min_dist > cfg.coefficients_dist_threshold
-                    '''
-                    使用for loop操作
-                    因為tensor使用boolean value作為index時
-                    False的元素會消失
-                    使得無法與其他detection info(bbox, class score ...)對應
-                    ***希望可優化(好醜)
-                    '''
-                    for i in range(isNotInList.shape[0]):
-                        if isNotInList[i]: min_indices[i] = -1
-                    preds[0]['detection']['id'] = min_indices
-                    
-            return preds
+            return self.detect(pred_outs, self) 
 
 '''
 作者用來testing的程式碼
 ?????
 '''
-
 
 # Some testing code
 if __name__ == '__main__':
