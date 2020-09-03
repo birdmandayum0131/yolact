@@ -100,7 +100,9 @@ def parse_args(argv=None):
     parser.add_argument('--image', default=None, type=str, #eval single image(path)
                         help='A path to an image to use for display.')
     parser.add_argument('--images', default=None, type=str, #eval multiple images(path)
-                        help='An input folder of images and output folder to save detected images. Should be in the format input->output.')
+                        help='An input folder of images and output folder to save detected images. Should be in the format input::output.')
+    parser.add_argument('--imagestream', default=None, type=str, #eval a image stream(path)
+                        help='An input folder of images and output folder to save detected images. Should be in the format input::output.')
     parser.add_argument('--video', default=None, type=str, #eval single video(path)
                         help='A path to a video to evaluate on. Passing in a number will use that index webcam.')
     '''
@@ -174,7 +176,94 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                                         crop_masks        = args.crop,
                                         score_threshold   = args.score_threshold)
         cfg.rescore_bbox = save
+        
+        
+    '''
+    將比較feature vector distance的code轉移到這裡來
+    '''
+    def calc_object_id(remain_object_vector):
+        '''
+        remain_object_vector.shape = torch.Size([R, 32])
+        R <= top_k
 
+        若是image stream input
+        則預設batch size = 1  #i.e. len(preds) = 1
+        '''
+        if remain_object_vector.shape[0] == 0: return remain_object_vector.cpu().numpy()
+        if cfg._tmp_init_objList_mode:
+            '''
+            初始化模式
+            將第一個frame所偵測到mask coefficients(還沒進行class score過濾)
+            儲存進objectList中
+            K = number of masks
+            shape = torch.Size([K,32])
+            '''
+            cfg._tmp_objectList = remain_object_vector.clone()
+            idTensor = torch.tensor(range(remain_object_vector.shape[0]))
+            '''
+            設計讓他自動關看看
+            '''
+            cfg._tmp_init_objList_mode = False
+        else:
+            '''
+            先計算K個detection對objectList中N個object在mask coefficients的Euclidean Distance
+            #由於每個coefficient的value介於range(-1,1)
+            #因此distance的value會介於range(0, 11.3137) #(1-(-1))^2 * 32 = 11.3137^2
+            KtoNdist.shape = torch.Size([K, N])
+            '''
+            KtoNdist = torch.cdist(remain_object_vector, cfg._tmp_objectList)
+            '''
+            計算最短距離的distance以及indices
+            使用dim = 1使得對每個coefficients in K
+            計算objectList中N個object裡最短的距離
+            min_dist.shape = min_indices.shape = torch.Size([K])
+            ***此處未來可用解Assignment problem的algorithm來優化(e.g. Hungarian algorithm)
+            '''
+            min_dist, min_indices = torch.min(KtoNdist, dim = 1)
+            '''
+            依據threshold來確定是否是同一object
+            ***未來可優化threshold
+            isInList = isNotInList = LongTensor(same size as min_dist)
+            轉成Long tensor以利於後面相乘
+            '''
+            isInList = (min_dist < cfg.coefficients_dist_threshold).long()
+            isNotInList = (isInList == 0).long()
+            '''
+            使用for loop操作
+            因為tensor使用boolean value作為index時
+            False的元素會消失
+            使得無法與其他detection info(bbox, class score ...)對應
+            ***希望可優化(好醜)
+            %%%改為利用矩陣乘法，就不會使維度下降(我好棒)
+            '''
+            idTensor = isInList*min_indices + isNotInList*-1
+            '''
+            開始更新objList
+            加速加速
+            KtoNmatrix.shape = torch.Size([N, K])
+            cmpIdxMat.shape = torch.Size(N, 1)
+            conformMat.shape = torch.Size([N, K]) #long tensor
+            hasMatch.shape = torch.Size([N]) #boolean tensor
+            由於False乘入dist會產生0，有礙於判斷最小距離，因此將distance reverse
+            #distance of two 32 dim vector with element value in range(-1,1) will in range(0,11.3137)
+            reverseDist.shape = torch.Size([K, N])
+            max_dist.shape = max_indices.shape = torch.Size([N]) #float, long tensor
+            '''
+            #print(idTensor)
+            KtoNmatrix = idTensor.repeat(cfg._tmp_objectList.shape[0], 1)
+            cmpIdxMat = torch.tensor(list(range(cfg._tmp_objectList.shape[0]))).repeat(1,1).t()
+            matrix = (KtoNmatrix == cmpIdxMat).long() #conformMat
+            hasMatch = torch.sum(matrix,dim=1) > 0
+            matrix = (12 - KtoNdist).t() * matrix #reverseDist.t() * conformMat
+            max_dist, max_indices = torch.max(matrix, dim = 1)
+            #print(hasMatch)
+            #print(max_indices)
+            cfg._tmp_objectList[hasMatch] = remain_object_vector[max_indices[hasMatch]]
+            #我好猛!!!
+            
+        return idTensor.cpu().numpy()
+        
+        
     with timer.env('Copy'):
         idx = t[1].argsort(0, descending=True)[:args.top_k]
         
@@ -186,7 +275,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             shape = torch.Size([L, 32])
             L <= 15(args.top_k)
             '''
-            ids = t[4][idx]
+            ids = calc_object_id( t[4][idx] )
+            
         classes, scores, boxes = [x[idx].cpu().numpy() for x in t[:3]]
 
     num_dets_to_consider = min(args.top_k, classes.shape[0])
@@ -688,6 +778,36 @@ def evalimages(net:Yolact, input_folder:str, output_folder:str):
         evalimage(net, path, out_path)
         print(path + ' -> ' + out_path)
     print('Done.')
+'''
+重新定義一個為image stream的method
+'''
+def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
+    assert cfg.use_on_img_stream, 'config未開啟image stream模式'
+    if not os.path.exists(output_folder): #create output folder directory
+        os.mkdir(output_folder)
+
+    '''
+    Path = class generator from pathlib(python library)
+    a library to instead os.path
+    ***超不會用!!!
+    直接用下面方法
+    '''
+    cfg._tmp_init_objList_mode = True
+    for p in Path(input_folder).glob('*'): #read all images in input folder
+        '''
+        determine output path
+        '''
+        path = str(p)
+        name = os.path.basename(path)
+        name = '.'.join(name.split('.')[:-1]) + '.png'
+        out_path = os.path.join(output_folder, name)
+
+        '''
+        call evalimage
+        '''
+        evalimage(net, path, out_path)
+        print(path + ' -> ' + out_path)
+    print('Done.')
 
 from multiprocessing.pool import ThreadPool
 from queue import Queue
@@ -961,6 +1081,10 @@ def evaluate(net:Yolact, dataset, train_mode=False):
         inp, out = args.images.split('::')
         evalimages(net, inp, out) #func eval*** is defined above
         return
+    elif args.imagestream is not None:
+        inp, out = args.imagestream.split('::')
+        evalimagestream(net, inp, out) #func eval*** is defined above
+        return
     elif args.video is not None:
         if '::' in args.video:
             inp, out = args.video.split('::')
@@ -1206,8 +1330,10 @@ if __name__ == '__main__':
                 ap_data = pickle.load(f) #pickle為儲存資料之library  類似於json
             calc_map(ap_data)
             exit()
-
-        if args.image is None and args.video is None and args.images is None: #若eval目標全為空  default為COCO dataset
+        '''
+        更新了一下image stream的參數
+        '''
+        if args.image is None and args.video is None and args.images is None and args.imagestream is None: #若eval目標全為空  default為COCO dataset
             dataset = COCODetection(cfg.dataset.valid_images, cfg.dataset.valid_info,
                                     transform=BaseTransform(), has_gt=cfg.dataset.has_gt)
             prep_coco_cats()

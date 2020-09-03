@@ -35,9 +35,12 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
     dets = det_output[batch_idx]
     net = dets['net']
     dets = dets['detection']
-
+    '''
+    將輸出轉為五個
+    小改一點
+    '''
     if dets is None:
-        return [torch.Tensor()] * 4 # Warning, this is 4 copies of the same thing
+        return [torch.Tensor()] * 5 # Warning, this is 5 copies of the same thing
 
     if score_threshold > 0:
         keep = dets['score'] > score_threshold
@@ -47,15 +50,19 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
                 dets[k] = dets[k][keep]
         
         if dets['score'].size(0) == 0:
-            return [torch.Tensor()] * 4
+            return [torch.Tensor()] * 5
     
     # Actually extract everything from dets now
     classes = dets['class']
     boxes   = dets['box']
     scores  = dets['score']
     masks   = dets['mask']
-    if 'id' in dets.keys():
-        ids = dets['id']
+    '''
+    由於將比較feature vector distance的code轉移至此函式後
+    因此將此處輸出ids還原為未處理的gpu mask coefficients
+    '''
+    if cfg.use_on_img_stream:
+        coefficients = dets['mask']
 
     if cfg.mask_type == mask_type.lincomb and cfg.eval_mask_branch:
         # At this points masks is only the coefficients
@@ -120,7 +127,7 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
         
         masks = full_masks
 
-    return classes, scores, boxes, masks, ids
+    return classes, scores, boxes, masks, coefficients
 
 
     
