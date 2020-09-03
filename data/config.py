@@ -700,6 +700,8 @@ yolact_base_config = coco_base_config.copy({
     'negative_iou_threshold': 0.4,
 
     'crowd_iou_threshold': 0.7,
+    
+    'coefficients_dist_threshold':11.3137,
 
     'use_semantic_segmentation_loss': True,
     'use_on_img_stream': False,
