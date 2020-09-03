@@ -958,8 +958,47 @@ class Yolact(nn.Module):
                 dets = dets['detection']
                 masks = dets['mask']
                 if self.init_objList_mode:
+                    '''
+                    初始化模式
+                    將第一個frame所偵測到mask coefficients(還沒進行class score過濾)
+                    儲存進objectList中
+                    K = number of masks
+                    shape = torch.Size([K,32])
+                    '''
                     self.objectList = masks.clone()
-                    preds[0]['detection']['id'] = list(range(len(objectList)))
+                    preds[0]['detection']['id'] = torch.tensor(range(len(objectList)))
+                else:
+                    '''
+                    先計算K個detection對objectList中N個object在mask coefficients的Euclidean Distance
+                    #由於每個coefficient的value介於range(-1,1)
+                    #因此distance的value會介於range(0, 11.3137) #(1-(-1))^2 * 32 = 11.3137^2
+                    KtoNdist.shape = torch.Size([K, N])
+                    '''
+                    KtoNdist = torch.cdist(masks, self.objectList)
+                    '''
+                    計算最短距離的distance以及indices
+                    使用dim = 1使得對每個coefficients in K
+                    計算objectList中N個object裡最短的距離
+                    min_dist.shape = min_indices.shape = torch.Size([K])
+                    ***此處未來可用解Assignment problem的algorithm來優化(e.g. Hungarian algorithm)
+                    '''
+                    min_dist, min_indices = torch.min(KtoNdist, dim = 1)
+                    '''
+                    依據threshold來確定是否是同一object
+                    ***未來可優化threshold
+                    isNotInList = booleanTensor(same size as min_dist)
+                    '''
+                    isNotInList = min_dist > cfg.coefficients_dist_threshold
+                    '''
+                    使用for loop操作
+                    因為tensor使用boolean value作為index時
+                    False的元素會消失
+                    使得無法與其他detection info(bbox, class score ...)對應
+                    ***希望可優化(好醜)
+                    '''
+                    for i in range(isNotInList.shape[0]):
+                        if isNotInList[i]: min_indices[i] = -1
+                    preds[0]['detection']['id'] = min_indices
                     
             return preds
 

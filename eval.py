@@ -181,6 +181,12 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         if cfg.eval_mask_branch:
             # Masks are drawn on the GPU, so don't copy
             masks = t[3][idx]
+        if cfg.use_on_img_stream:
+            '''
+            shape = torch.Size([L, 32])
+            L <= 15(args.top_k)
+            '''
+            ids = t[4][idx]
         classes, scores, boxes = [x[idx].cpu().numpy() for x in t[:3]]
 
     num_dets_to_consider = min(args.top_k, classes.shape[0])
@@ -214,7 +220,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             remainingMask = np.ones(( 1, h, w, 1)).astype(np.uint8)
             masks = masks[:num_dets_to_consider, :, :, None].cpu().numpy().astype(np.uint8)
             for i in range(num_dets_to_consider):
-                paletteMask = paletteMask + remainingMask*masks[i]*(i+1)
+                paletteMask = paletteMask + remainingMask*masks[i]*(ids[i]+1)
                 remainingMask = remainingMask - ( remainingMask * masks[i] )
         return paletteMask
     # First, draw the masks on the GPU where we can do it really fast
