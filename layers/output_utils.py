@@ -54,7 +54,8 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
     boxes   = dets['box']
     scores  = dets['score']
     masks   = dets['mask']
-    ids = dets['id']
+    if 'id' in dets.keys():
+        ids = dets['id']
 
     if cfg.mask_type == mask_type.lincomb and cfg.eval_mask_branch:
         # At this points masks is only the coefficients
