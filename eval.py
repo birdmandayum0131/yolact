@@ -101,10 +101,21 @@ def parse_args(argv=None):
                         help='A path to an image to use for display.')
     parser.add_argument('--images', default=None, type=str, #eval multiple images(path)
                         help='An input folder of images and output folder to save detected images. Should be in the format input::output.')
+    '''
+    我加的
+    為了使此model可以應用在image stream上
+    '''
     parser.add_argument('--imagestream', default=None, type=str, #eval a image stream(path)
                         help='An input folder of images and output folder to save detected images. Should be in the format input::output.')
     parser.add_argument('--video', default=None, type=str, #eval single video(path)
                         help='A path to a video to evaluate on. Passing in a number will use that index webcam.')
+    '''
+    我加的
+    為了使input可以接受DAVIS的list file
+    目前只支援davis的路徑
+    '''
+    parser.add_argument('--input_file', default=None, type=str, #eval list of multiple image stream in file(path)
+                    help='A path to a input file which contains list of image stream to evaluate on. Should be in the format input::output.')
     '''
     若輸入video play at higher fps
     可使用此config降低
@@ -808,6 +819,20 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
         evalimage(net, path, out_path)
         print(path + ' -> ' + out_path)
     print('Done.')
+def evalDAVISdatafile(net:Yolact, input_file:str, output_folder:str, data_root_dir:str = "D:/Bird/DAVIS/JPEGImages/480p/"):
+    assert cfg.use_on_img_stream, 'config未開啟image stream模式'
+    if not os.path.exists(output_folder): #create output folder directory
+        os.mkdir(output_folder)
+    '''
+    從davis evaluate學來的
+    最下面直接使用前面定義的func
+    '''
+    video_names = [ each_line.strip() for each_line in open(input_file, 'r').readlines() ]
+    for video_name in video_names:
+        i_input_folder = os.path.join(data_root_dir, video_name)
+        i_output_folder = os.path.join(output_folder, video_name)
+        evalimagestream( net, i_input_folder, i_output_folder)
+        
 
 from multiprocessing.pool import ThreadPool
 from queue import Queue
@@ -1092,6 +1117,10 @@ def evaluate(net:Yolact, dataset, train_mode=False):
         else:
             evalvideo(net, args.video)
         return
+    elif args.input_file is not None:
+        inp, out = args.input_file.split('::')
+        evalDAVISdatafile(net, inp, out) #func eval*** is defined above
+        return
     '''
     -----------------------------若evaluate目標單純---------------------------------------
     '''
@@ -1332,8 +1361,9 @@ if __name__ == '__main__':
             exit()
         '''
         更新了一下image stream的參數
+        更新了一下input file的參數
         '''
-        if args.image is None and args.video is None and args.images is None and args.imagestream is None: #若eval目標全為空  default為COCO dataset
+        if args.image is None and args.video is None and args.images is None and args.imagestream is None and args.input_file is None: #若eval目標全為空  default為COCO dataset
             dataset = COCODetection(cfg.dataset.valid_images, cfg.dataset.valid_info,
                                     transform=BaseTransform(), has_gt=cfg.dataset.has_gt)
             prep_coco_cats()
