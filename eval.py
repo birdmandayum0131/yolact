@@ -261,12 +261,13 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             '''
             初始化idTensor = 0(long Tensor)
             將有對應到之物件標上
-            將無對應到之detection = -1(輸出成背景)
+                將無對應到之detection = -1(輸出成背景)
+            --->將無對應到之detection = new object(輸出成新id)
             ***找到如何處理無對應到之detection時修改此處
             '''
             idTensor = torch.zeros(_tmp_max_indices.shape).long()
             idTensor[_tmp_hasMatch] = _tmp_max_indices[_tmp_hasMatch]
-            idTensor[_tmp_noMatch] = -1
+            idTensor[_tmp_noMatch] = torch.tensor(range(torch.sum(_tmp_noMatch.long()).item())).long() + cfg._tmp_objectList.shape[0]
             '''
             開始更新objList
             N_max_indices.shape = torch.Size([N]) 為了更新object list用
