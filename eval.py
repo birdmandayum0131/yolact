@@ -225,52 +225,63 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             KtoNdist = torch.cdist(remain_object_vector, cfg._tmp_objectList)
             '''
             計算最短距離的distance以及indices
-            使用dim = 1使得對每個coefficients in K
-            計算objectList中N個object裡最短的距離
-            min_dist.shape = min_indices.shape = torch.Size([K])
+            使用兩種dim提供給後續做intersection
+            計算objectList中N個object裡最短的距離, 計算object vector中K個object裡最短的距離
+            K_min_dist.shape = K_min_indices.shape = torch.Size([K])
+            N_min_dist.shape = N_min_indices.shape = torch.Size([N])
+            另外也將distance > threshold的目標轉換成矩陣以利於做intersection
             ***此處未來可用解Assignment problem的algorithm來優化(e.g. Hungarian algorithm)
+            ???目前的想法是不需要
             '''
-            min_dist, min_indices = torch.min(KtoNdist, dim = 1)
+            matchMatrix_A = torch.zeros(KtoNdist.shape).cuda().long()
+            matchMatrix_B = torch.zeros(KtoNdist.shape).cuda().long()
+            
+            _tmp_min_dist, _tmp_min_indices = torch.min(KtoNdist, dim = 1) #K_min_dist, K_min_indices
+            matchMatrix_A[ range(matchMatrix_A.shape[0]),_tmp_min_indices] = 1
+            
+            _tmp_min_dist, _tmp_min_indices = torch.min(KtoNdist, dim = 0) #N_min_dist, N_min_indices
+            matchMatrix_B[ _tmp_min_indices, range(matchMatrix_B.shape[1])] = 1
             '''
+            matchMatrix_A.shape = matchMatrix_B.shape = isOverThreshold.shape = KtoNdist.shape
+            K_max_indices.shape = torch.Size([K]) 為了輸出idTensor用
+            K_sum_matrix.shape = torch.Size([K]) 用來判斷K個detection裡哪些有對應到object list
+            (K_hasMatch.shape + K_noMatch.shape) = K_sum_matrix.shape = torch.Size([K])
+            接著將三項目做交集
+            ***此處假設一物件對自己的距離"絕對"比其他物件對自己的距離還小
             依據threshold來確定是否是同一object
+            經過三matrix 之intersection留下的視為有對應到object list
             ***未來可優化threshold
-            isInList = isNotInList = LongTensor(same size as min_dist)
-            轉成Long tensor以利於後面相乘
             '''
-            isInList = (min_dist < cfg.coefficients_dist_threshold).long()
-            isNotInList = (isInList == 0).long()
+            isOverThreshold = (KtoNdist < cfg.coefficients_dist_threshold).long()
+            matchMatrix = ((matchMatrix_A + matchMatrix_B + isOverThreshold) == 3).long()
+            _tmp_max_dist, _tmp_max_indices = torch.max(matchMatrix, dim = 1) # K_max_indices
+            _tmp_sum = torch.sum(matchMatrix,dim=1) #K_sum_matrix
+            _tmp_hasMatch = _tmp_sum > 0 #K_hasMatch
+            _tmp_noMatch = _tmp_sum == 0 #K_noMatch
             '''
-            使用for loop操作
-            因為tensor使用boolean value作為index時
-            False的元素會消失
-            使得無法與其他detection info(bbox, class score ...)對應
-            ***希望可優化(好醜)
-            %%%改為利用矩陣乘法，就不會使維度下降(我好棒)
+            初始化idTensor = 0(long Tensor)
+            將有對應到之物件標上
+            將無對應到之detection = -1(輸出成背景)
+            ***找到如何處理無對應到之detection時修改此處
             '''
-            idTensor = isInList*min_indices + isNotInList*-1
+            idTensor = torch.zeros(_tmp_max_indices.shape).long()
+            idTensor[_tmp_hasMatch] = _tmp_max_indices[_tmp_hasMatch]
+            idTensor[_tmp_noMatch] = -1
             '''
             開始更新objList
-            加速加速
-            KtoNmatrix.shape = torch.Size([N, K])
-            cmpIdxMat.shape = torch.Size(N, 1)
-            conformMat.shape = torch.Size([N, K]) #long tensor
-            hasMatch.shape = torch.Size([N]) #boolean tensor
-            由於False乘入dist會產生0，有礙於判斷最小距離，因此將distance reverse
-            #distance of two 32 dim vector with element value in range(-1,1) will in range(0,11.3137)
-            reverseDist.shape = torch.Size([K, N])
-            max_dist.shape = max_indices.shape = torch.Size([N]) #float, long tensor
+            N_max_indices.shape = torch.Size([N]) 為了更新object list用
+            N_sum_matrix.shape = torch.Size([N]) 用來判斷N個object中哪些有"被"對應到
+            N_hasMatch.shape <= torch.Size([N]) 同上
+            將有"被"對應到之object更新
+            ***找到如何處理無對應到之detection時修改此處
+            ***找到如何處理久久未更新之object時修改此處
             '''
-            #print(idTensor)
-            KtoNmatrix = idTensor.repeat(cfg._tmp_objectList.shape[0], 1)
-            cmpIdxMat = torch.tensor(list(range(cfg._tmp_objectList.shape[0]))).repeat(1,1).t()
-            matrix = (KtoNmatrix == cmpIdxMat).long() #conformMat
-            hasMatch = torch.sum(matrix,dim=1) > 0
-            matrix = (12 - KtoNdist).t() * matrix #reverseDist.t() * conformMat
-            max_dist, max_indices = torch.max(matrix, dim = 1)
-            #print(hasMatch)
-            #print(max_indices)
-            cfg._tmp_objectList[hasMatch] = remain_object_vector[max_indices[hasMatch]]
-            #我好猛!!!
+            _tmp_max_dist, _tmp_max_indices = torch.max(matchMatrix, dim = 0) #N_max_indices
+            _tmp_sum = torch.sum(matchMatrix,dim=0) #N_sum_matrix
+            _tmp_hasMatch = _tmp_sum > 0 #N_hasMatch
+            cfg._tmp_objectList[_tmp_hasMatch] = remain_object_vector[_tmp_max_indices[_tmp_hasMatch]]
+            cfg._tmp_objectList = torch.cat((cfg._tmp_objectList, remain_object_vector[_tmp_noMatch]), dim=0)
+            print(cfg._tmp_objectList.shape[0])
             
         return idTensor.cpu().numpy()
         
@@ -314,8 +325,9 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                 color_cache[on_gpu][color_idx] = color
             return color
     if args.output_davis_format and cfg.eval_mask_branch and cfg.use_on_img_stream:
-        
-        
+        '''
+        目前只有id = 1 ~ 32之物件會被調色(圖片顯示上)
+        '''
         paletteMask = np.zeros(( 1, h, w, 1)).astype(np.uint8)
         if num_dets_to_consider > 0:
             remainingMask = np.ones(( 1, h, w, 1)).astype(np.uint8)
