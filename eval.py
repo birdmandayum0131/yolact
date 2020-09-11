@@ -51,15 +51,15 @@ def parse_args(argv=None):
                         help='output 8bit palette int png file for DAVIS evaluate')
     parser.add_argument('--fast_nms', default=True, type=str2bool, #是否使用論文提出之fast nms (default true)
                         help='Whether to use a faster, but not entirely correct version of NMS.')
-    parser.add_argument('--cross_class_nms', default=False, type=str2bool, #nms計算時是否分class(default true)
+    parser.add_argument('--cross_class_nms', default=True, type=str2bool, #nms計算時是否分class(default true)
                         help='Whether compute NMS cross-class or per-class.')
     parser.add_argument('--display_masks', default=True, type=str2bool,#結果是否顯示mask
                         help='Whether or not to display masks over bounding boxes')
-    parser.add_argument('--display_bboxes', default=False, type=str2bool,#結果是否顯示bbox
+    parser.add_argument('--display_bboxes', default=True, type=str2bool,#結果是否顯示bbox
                         help='Whether or not to display bboxes around masks')
-    parser.add_argument('--display_text', default=False, type=str2bool,#結果是否顯示class
+    parser.add_argument('--display_text', default=True, type=str2bool,#結果是否顯示class
                         help='Whether or not to display text (class [score])')
-    parser.add_argument('--display_scores', default=False, type=str2bool,#結果是否顯示score
+    parser.add_argument('--display_scores', default=True, type=str2bool,#結果是否顯示score
                         help='Whether or not to display scores in addition to classes')
     parser.add_argument('--display', dest='display', action='store_true', #????
                         help='Display qualitative results instead of quantitative ones.')
@@ -122,7 +122,7 @@ def parse_args(argv=None):
     '''
     parser.add_argument('--video_multiframe', default=1, type=int, 
                         help='The number of frames to evaluate in parallel to make videos play at higher fps.')
-    parser.add_argument('--score_threshold', default=0.45, type=float,
+    parser.add_argument('--score_threshold', default=0.45, type=float, #0.45
                         help='Detections with a score under this threshold will not be considered. This currently only works in display mode.')
     parser.add_argument('--dataset', default=None, type=str,
                         help='If specified, override the dataset specified in the config with this one (example: coco2017_dataset).')
@@ -216,6 +216,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             '''
             cfg._tmp_init_objList_mode = False
         else:
+            
             '''
             先計算K個detection對objectList中N個object在mask coefficients的Euclidean Distance
             #由於每個coefficient的value介於range(-1,1)
@@ -223,6 +224,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             KtoNdist.shape = torch.Size([K, N])
             '''
             KtoNdist = torch.cdist(remain_object_vector, cfg._tmp_objectList)
+            print(KtoNdist)
             '''
             計算最短距離的distance以及indices
             使用兩種dim提供給後續做intersection
@@ -235,7 +237,6 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             '''
             matchMatrix_A = torch.zeros(KtoNdist.shape).cuda().long()
             matchMatrix_B = torch.zeros(KtoNdist.shape).cuda().long()
-            
             _tmp_min_dist, _tmp_min_indices = torch.min(KtoNdist, dim = 1) #K_min_dist, K_min_indices
             matchMatrix_A[ range(matchMatrix_A.shape[0]),_tmp_min_indices] = 1
             
@@ -258,6 +259,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             _tmp_sum = torch.sum(matchMatrix,dim=1) #K_sum_matrix
             _tmp_hasMatch = _tmp_sum > 0 #K_hasMatch
             _tmp_noMatch = _tmp_sum == 0 #K_noMatch
+            
             '''
             初始化idTensor = 0(long Tensor)
             將有對應到之物件標上
@@ -282,7 +284,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             _tmp_hasMatch = _tmp_sum > 0 #N_hasMatch
             cfg._tmp_objectList[_tmp_hasMatch] = remain_object_vector[_tmp_max_indices[_tmp_hasMatch]]
             cfg._tmp_objectList = torch.cat((cfg._tmp_objectList, remain_object_vector[_tmp_noMatch]), dim=0)
-            print(cfg._tmp_objectList.shape[0])
+            #print(cfg._tmp_objectList.shape[0])
+            
             
         return idTensor.cpu().numpy()
         
@@ -806,7 +809,8 @@ def evalimages(net:Yolact, input_folder:str, output_folder:str):
 重新定義一個為image stream的method
 '''
 def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
-    assert cfg.use_on_img_stream, 'config未開啟image stream模式'
+    '''config開啟image stream模式'''
+    cfg.use_on_img_stream = True
     if not os.path.exists(output_folder): #create output folder directory
         os.mkdir(output_folder)
 
@@ -833,7 +837,6 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
         print(path + ' -> ' + out_path)
     print('Done.')
 def evalDAVISdatafile(net:Yolact, input_file:str, output_folder:str, data_root_dir:str = "D:/Bird/DAVIS/JPEGImages/480p/"):
-    assert cfg.use_on_img_stream, 'config未開啟image stream模式'
     if not os.path.exists(output_folder): #create output folder directory
         os.mkdir(output_folder)
     '''
@@ -1398,6 +1401,9 @@ if __name__ == '__main__':
         '''
         func evaluate is defined above
         '''
+        time3 = time.time()
         evaluate(net, dataset)
+        time4 = time.time()
+        print("total time = %f sec"%(time4-time3))
 
 
