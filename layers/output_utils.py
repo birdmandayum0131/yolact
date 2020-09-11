@@ -63,6 +63,7 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
     '''
     if cfg.use_on_img_stream:
         coefficients = dets['mask']
+    else: coefficients = torch.Tensor()
 
     if cfg.mask_type == mask_type.lincomb and cfg.eval_mask_branch:
         # At this points masks is only the coefficients
