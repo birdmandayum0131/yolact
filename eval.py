@@ -192,7 +192,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
     '''
     將比較feature vector distance的code轉移到這裡來
     '''
-    def calc_object_id(remain_object_vector):
+    def calc_object_id(dets):
+        classes, scores, boxes, masks, remain_object_vector = dets
         '''
         remain_object_vector.shape = torch.Size([R, 32])
         R <= top_k
@@ -200,8 +201,16 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         若是image stream input
         則預設batch size = 1  #i.e. len(preds) = 1
         '''
-        if remain_object_vector.shape[0] == 0: return remain_object_vector.cpu().numpy()
+        
         if cfg._tmp_init_objList_mode:
+            '''
+            若為初始化模式
+            則score threshold不變
+            '''
+            if args.score_threshold > 0:              
+                keep = scores > args.score_threshold                
+                
+                classes, scores, boxes, masks, remain_object_vector = classes[keep], scores[keep], boxes[keep], masks[keep], remain_object_vector[keep]
             '''
             初始化模式
             將第一個frame所偵測到mask coefficients(還沒進行class score過濾)
@@ -213,10 +222,13 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             idTensor = torch.tensor(range(remain_object_vector.shape[0]))
             '''
             設計讓他自動關看看
+            !!!若第一frame沒有偵測到
+                繼續初始化模式
             '''
-            cfg._tmp_init_objList_mode = False
+            if remain_object_vector.shape[0] > 0:
+                cfg._tmp_init_objList_mode = False
         else:
-            
+            if remain_object_vector.shape[0] == 0: return classes, scores, boxes, masks, remain_object_vector.cpu().numpy()
             '''
             先計算K個detection對objectList中N個object在mask coefficients的Euclidean Distance
             #由於每個coefficient的value介於range(-1,1)
@@ -224,7 +236,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             KtoNdist.shape = torch.Size([K, N])
             '''
             KtoNdist = torch.cdist(remain_object_vector, cfg._tmp_objectList)
-            print(KtoNdist)
+            #print(KtoNdist)
             '''
             計算最短距離的distance以及indices
             使用兩種dim提供給後續做intersection
@@ -255,11 +267,27 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             '''
             isOverThreshold = (KtoNdist < cfg.coefficients_dist_threshold).long()
             matchMatrix = ((matchMatrix_A + matchMatrix_B + isOverThreshold) == 3).long()
+            
             _tmp_max_dist, _tmp_max_indices = torch.max(matchMatrix, dim = 1) # K_max_indices
             _tmp_sum = torch.sum(matchMatrix,dim=1) #K_sum_matrix
-            _tmp_hasMatch = _tmp_sum > 0 #K_hasMatch
+            _tmp_hasMatch = _tmp_sum > 0 #or == 1#K_hasMatch
             _tmp_noMatch = _tmp_sum == 0 #K_noMatch
             
+            '''
+            依照有無對應到來改變threshold
+            並進行篩選
+            '''
+            if args.score_threshold > 0:
+                scoreThreshold = torch.zeros(scores.shape) + args.score_threshold
+                
+                scoreThreshold[_tmp_hasMatch] = 0
+                
+                keep = scores > scoreThreshold
+                
+                
+                classes, scores, boxes, masks, remain_object_vector = classes[keep], scores[keep], boxes[keep], masks[keep], remain_object_vector[keep]
+                matchMatrix, _tmp_max_indices, _tmp_hasMatch, _tmp_noMatch = matchMatrix[keep], _tmp_max_indices[keep], _tmp_hasMatch[keep], _tmp_noMatch[keep]
+                
             '''
             初始化idTensor = 0(long Tensor)
             將有對應到之物件標上
@@ -281,13 +309,14 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             '''
             _tmp_max_dist, _tmp_max_indices = torch.max(matchMatrix, dim = 0) #N_max_indices
             _tmp_sum = torch.sum(matchMatrix,dim=0) #N_sum_matrix
-            _tmp_hasMatch = _tmp_sum > 0 #N_hasMatch
+            _tmp_hasMatch = _tmp_sum > 0 #or == 1#N_hasMatch
             cfg._tmp_objectList[_tmp_hasMatch] = remain_object_vector[_tmp_max_indices[_tmp_hasMatch]]
             cfg._tmp_objectList = torch.cat((cfg._tmp_objectList, remain_object_vector[_tmp_noMatch]), dim=0)
-            #print(cfg._tmp_objectList.shape[0])
+            print(cfg._tmp_objectList.shape[0])
+            #print(idTensor)
             
             
-        return idTensor.cpu().numpy()
+        return classes, scores, boxes, idTensor.cpu().numpy()
         
         
     with timer.env('Copy'):
@@ -296,20 +325,29 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         if cfg.eval_mask_branch:
             # Masks are drawn on the GPU, so don't copy
             masks = t[3][idx]
-        if cfg.use_on_img_stream:
+        
+        classes, scores, boxes = [x[idx] for x in t[:3]]
+        
+        if cfg.eval_mask_branch and cfg.use_on_img_stream:
             '''
             shape = torch.Size([L, 32])
             L <= 15(args.top_k)
             '''
-            ids = calc_object_id( t[4][idx] )
+            classes, scores, boxes, ids = calc_object_id( [classes, scores, boxes, masks, t[4][idx]] )
             
-        classes, scores, boxes = [x[idx].cpu().numpy() for x in t[:3]]
+        classes, scores, boxes = classes.cpu().numpy(), scores.cpu().numpy(), boxes.cpu().numpy()
 
     num_dets_to_consider = min(args.top_k, classes.shape[0])
     for j in range(num_dets_to_consider):
+        '''
+        此段原本應該是多餘(因為在postprocess就會濾掉)
+        而新的threshold方法更會讓東西顯示不出來
+        '''
+        '''
         if scores[j] < args.score_threshold:
             num_dets_to_consider = j
             break
+        '''
 
     # Quick and dirty lambda for selecting the color for a particular index
     # Also keeps track of a per-gpu color cache for maximum speed
