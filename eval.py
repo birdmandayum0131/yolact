@@ -316,7 +316,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             #print(idTensor)
             
             
-        return classes, scores, boxes, idTensor.cpu().numpy()
+        return classes, scores, boxes, masks, idTensor.cpu().numpy()
         
         
     with timer.env('Copy'):
@@ -333,7 +333,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             shape = torch.Size([L, 32])
             L <= 15(args.top_k)
             '''
-            classes, scores, boxes, ids = calc_object_id( [classes, scores, boxes, masks, t[4][idx]] )
+            classes, scores, boxes, masks, ids = calc_object_id( [classes, scores, boxes, masks, t[4][idx]] )
             
         classes, scores, boxes = classes.cpu().numpy(), scores.cpu().numpy(), boxes.cpu().numpy()
 
@@ -375,7 +375,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             remainingMask = np.ones(( 1, h, w, 1)).astype(np.uint8)
             masks = masks[:num_dets_to_consider, :, :, None].cpu().numpy().astype(np.uint8)
             for i in range(num_dets_to_consider):
-                paletteMask = paletteMask + remainingMask*masks[i]*(ids[i]+1)
+                paletteMask = paletteMask + remainingMask*masks[i]*(ids[i]+1 if ids[i]+1 < 33 else 0)
                 remainingMask = remainingMask - ( remainingMask * masks[i] )
         return paletteMask
     # First, draw the masks on the GPU where we can do it really fast
