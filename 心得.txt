@@ -54,6 +54,8 @@
 			--->想辦法找出前景與雜訊到底還有哪些地方不同(不單純利用confidence score濾雜訊)
 			----從已知資訊中找出不同
 			----從未獲得資訊中找出不同
+			
+	--->2020/09/16已解決
 	
 			
 	4.效果較差的情況大部分都是屬於"人"
@@ -62,3 +64,102 @@
 			--->人類相較其他class在"外觀"、"輪廓"上較為複雜
 			----不太能用與其他class相同維度的向量來描述
 			
+2020/09/16
+
+	1.將程式碼的score threshold移至re-id部分一起做(效果應該是變慢但threshold現在可變)
+		
+		---設計核心概念---
+		!!!因confidence score普遍低，因而許多前景物件都會在某些frame被濾掉，導致對應錯誤
+			--->此處發現並不是普遍低，而是 "class不完全對應到" 或 "物體轉向正面" 時會明顯將低
+		!!!嘗試利用coefficient的對應關係來輔助判斷confidence score，使得若coefficient有對應到(此處依賴於我們的對應判定比較嚴格)
+		!!!就可以將score threshold降低，避免這些物體被濾掉
+			
+		!!!此處若嘗試成功，就可以製造出 "利用物體輪廓(coef)在時間軸上(obj list)的資訊 來輔助前背景(confidence score)判斷" 的情況
+		
+		#將score threshold判斷移至re-id部分，使得confidence較小的物體也能一起參與判斷(想辦法補齊遺失的前景物件)
+			
+			(1)初始化(第一個Frame)時使用score threshold，使得第一個frame盡量不要包含雜訊
+				--->但也造成了某些video第一個frame偵測不到物體
+					--->初始化模式繼續
+					
+			(2)將score threshold做成tensor matrix(每個物體threshold初始化為score threshold)
+			
+			(3)進行所有detection以及obj list的比對，若是有對應到，則將該物件的threshold降低為0(強制保留下來)
+			
+			(4)其他沒有對應到低score物件依舊不要(從matrix中直接抹掉)
+			
+			(5)更新obj list
+				!!!此處會被更新至obj list的有三種物件
+			
+				[1]高score且有對應到之物件--->視為與前一frame對應到之物件--->更新obj list對應到之coef
+				
+				[2]高score沒有對應到之物件--->視為新偵測到的物件or高信心度的雜訊(目前不處理)--->將coef新增之obj list中
+				
+				[3]低score但有對應到之物件--->視為較難辨識(低信心度)但輪廓與過去物件相似(coef相似)之物件--->更新obj list對應到之coef
+				
+2020/09/23
+
+	---想辦法處理人類分辨不好的問題---
+	
+	1.bike packing
+		
+		---觀察bike packing---
+		
+		#去觀察那些顯示沒有偵測出來的Frame
+		#實際測試後其實大部分都有偵測到
+			--->現有資訊還沒有利用完
+			
+		#被濾掉的detection大部分是在NMS被濾掉的(包括cross class的NMS)
+			--->想辦法改變機制，讓NMS沒法濾掉它
+			
+		!!!針對basic NMS的情況
+		#score比較低
+			--->由於NMS會優先把confidence score比較高的放前面
+			--->因此你的score如果不夠高，會被其他detection給取代掉
+				--->觀察後其實某些被濾掉的人類score也不低
+				--->但bbox有時候會只框出人類的一部份，score更高，從而把比較好的mask取代掉
+					--->想辦法利用mask的資訊，去取到更準確的feature做confidence score判斷
+					
+		!!!針對cross class NMS的情況
+		#其他物件的confidence score比人類高的情況很常見
+		#因此不能單純的想把單一物件的score拉高(還有其他的問題)
+		
+		#人類在修理 or 與其他物件互動的時候
+		#時常會發生bounding box與其他物件重疊的情況
+		#但其實兩者在畫面上並沒有明顯重疊
+		#但這就會造成NMS在判斷的時候需要在這兩個中取一個(但其實兩個都可以保留下來)
+			--->bounding box的NMS已經不符合需求
+			--->想用mask做NMS判斷
+				???? mask做NMS判斷不知道會花上多少時間(研讀一下NMS程式碼)
+				???? mask做NMS判斷不知道會花上多少資源
+					--->DAVIS evaluation好像有做過類似的東西，detection多時，記憶體耗很兇
+					
+				!?!? 當初yolact使用Fast NMS取代NMS，代表NMS本身應該就有點耗時
+					--->能否盡量不使NMS變複雜
+						???? 是否能利用coefficient來輔助NMS
+			
+	2.boxing fisheye
+	
+		---觀察boxing fisheye---
+		
+		#後面的觀眾有些會被偵測進來
+		#理想狀態下應該把目標focus在前面拳擊手就好
+			--->yolact本身就沒有眼睛focus的概念(更甚來說也沒看過有論文有)
+				--->需要加上新的資訊
+					--->去找看看有沒有專注於眼睛focus上的論文
+					
+			--->同一類物件很靠近的時候，時常會發生將兩個物件判斷成一個物件的情況
+			
+				(1)由於同一類物件feature本來就相似
+					--->理想來說是這樣，也不太會想改變這塊
+					
+				(2)由於bounding box不明確
+					--->對於這種需要更加細膩的segmentation來說
+					--->一開始設計for object detection的bounding box可能已經不敷使用
+						--->是否該開始研究key point detection ???
+					**** key point為只針對人類這一個class的challenge
+						
+				(3)由於yolact的bounding box其實並沒有那麼準
+					--->這應該是SSD的問題，追求快的同時也得犧牲掉feature的精準度
+						--->利用上面key point的方法可能可以解決 ???
+					**** 同上

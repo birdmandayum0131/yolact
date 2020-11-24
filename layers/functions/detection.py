@@ -109,20 +109,50 @@ class Detect(object):
 
 
     def cc_fast_nms(self, boxes, masks, scores, iou_threshold:float=0.5, top_k:int=200):
+        
+        '''
+        先將score 替換為81個class中信心最高的confidence score
+        並將哪個class存在classes中
+        '''
         # Collapse all the classes into 1 
         scores, classes = scores.max(dim=0)
-
+        
+        '''
+        依照confidence score排列
+        並取前200個進來做NMS
+        '''
         _, idx = scores.sort(0, descending=True)
         idx = idx[:top_k]
 
         boxes_idx = boxes[idx]
-
+        
+        #gt = torch.tensor([[0.357,0.375,0.460,0.9625]])
+        '''
+        利用box_utils的function計算jaccard coefficient
+        '''
         # Compute the pairwise IoU between the boxes
         iou = jaccard(boxes_idx, boxes_idx)
-        
+        '''
+        測試gt iou
+                    iou = jaccard(boxes_idx, gt)
+                    iou_max, _ = torch.max(iou, dim=0)
+                    print(iou_max)
+                    exit()
+        '''
+        '''
+        為什麼是cosine similarity ?
+        取矩陣的上半三角(下半三角與上半一樣意思)
+        對角線不留下(設為0)
+        留下會使下面取max時取到對角線
+        '''
         # Zero out the lower triangle of the cosine similarity matrix and diagonal
         iou.triu_(diagonal=1)
-
+        
+        '''
+        對"每"row_size個物件取max
+        結果為column_size個數值
+        代表("此detection"與"所有confidence比它高的detection"之間最高的iou)
+        '''
         # Now that everything in the diagonal and below is zeroed out, if we take the max
         # of the IoU matrix along the columns, each column will represent the maximum IoU
         # between this element and every element with a higher score than this element.
