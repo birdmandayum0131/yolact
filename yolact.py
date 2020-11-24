@@ -803,7 +803,10 @@ class Yolact(nn.Module):
             # Whether or not to have a separate branch whose sole purpose is to act as the coefficients for coeff_diversity_loss
             # Remember to turn on coeff_diversity_loss, or these extra coefficients won't do anything!
             # To see their effect, also remember to turn on use_coeff_nms.
-            估計是yolact++之論文內容(??????)待釐清
+                !!!!估計是yolact++之論文內容(??????)待釐清
+            --->非yoalct++之內容，不確定是哪篇論文(沒線索)
+            --->類似re-id，將每一個anchor"額外"預測I個coefficient(default 64)
+            --->用來做以此id配合cosine similarity做的NMS(但不知為何沒有實作)
             default False
             '''
             if cfg.use_instance_coeff:
@@ -949,6 +952,13 @@ class Yolact(nn.Module):
             尚未過濾class confidence score, top k results
             因此將code轉移至eval.py一起進行
             '''
+            """
+            At test time, Detect is the final layer of SSD.  Decode location preds,
+            apply non-maximum suppression to location predictions based on conf
+            scores and threshold to a top_k number of output predictions for both
+            confidence score and locations, as the predicted masks.
+            其實就是NMS
+            """
             return self.detect(pred_outs, self) 
 
 '''
