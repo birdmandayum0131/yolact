@@ -30,12 +30,12 @@ def str2bool(v):
 
 parser = argparse.ArgumentParser(
     description='Yolact Training Script')
-parser.add_argument('--batch_size', default=8, type=int,
+parser.add_argument('--batch_size', default=8, type=int, #default batch size as 8
                     help='Batch size for training')
-parser.add_argument('--resume', default=None, type=str,
+parser.add_argument('--resume', default=None, type=str, #resume training from checkpoint file
                     help='Checkpoint state_dict file to resume training from. If this is "interrupt"'\
                          ', the model will resume training from the interrupt file.')
-parser.add_argument('--start_iter', default=-1, type=int,
+parser.add_argument('--start_iter', default=-1, type=int, 
                     help='Resume training at this iter. If this is -1, the iteration will be'\
                          'determined from the file name.')
 parser.add_argument('--num_workers', default=4, type=int,
@@ -91,6 +91,7 @@ if args.dataset is not None:
 if args.autoscale and args.batch_size != 8:
     factor = args.batch_size / 8
     if __name__ == '__main__':
+        '''根據batch size為8的倍數調整learning rate, iteration, steps'''
         print('Scaling parameters by %.2f to account for a batch size of %d.' % (factor, args.batch_size))
 
     cfg.lr *= factor
@@ -108,10 +109,14 @@ replace('momentum')
 # This is managed by set_lr
 cur_lr = args.lr
 
+'''檢查有無gpu'''
 if torch.cuda.device_count() == 0:
     print('No GPUs detected. Exiting...')
     exit(-1)
-
+'''
+若每個gpu分配到的local batch size < 6
+則不適合做batch normalization
+'''
 if args.batch_size // torch.cuda.device_count() < 6:
     if __name__ == '__main__':
         print('Per-GPU batch size is less than the recommended limit for batch norm. Disabling batch norm.')
@@ -119,6 +124,7 @@ if args.batch_size // torch.cuda.device_count() < 6:
 
 loss_types = ['B', 'C', 'M', 'P', 'D', 'E', 'S', 'I']
 
+'''看看你有沒有偷藏你的gpu不用'''
 if torch.cuda.is_available():
     if args.cuda:
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
@@ -129,6 +135,12 @@ if torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
+'''
+用來算loss的網路
+優化平行運算用(?)
+因為nn.DataParallel必須輸入nn.module
+所以把loss用網路包著(?)
+'''
 class NetLoss(nn.Module):
     """
     A wrapper for running the network and computing the loss
@@ -145,13 +157,21 @@ class NetLoss(nn.Module):
         preds = self.net(images)
         losses = self.criterion(self.net, preds, targets, masks, num_crowds)
         return losses
-
+'''
+yolact自己做的平行運算
+對他們的data來說效果比pytorch原生的更好
+'''
 class CustomDataParallel(nn.DataParallel):
     """
     This is a custom version of DataParallel that works better with our training data.
     It should also be faster than the general case.
     """
-
+    
+    '''
+    把data平行分開來做batch normalization
+    同時做資料分散跟資料準備(?)
+    func:prepare_data之後再看
+    '''
     def scatter(self, inputs, kwargs, device_ids):
         # More like scatter and data prep at the same time. The point is we prep the data in such a way
         # that no scatter is necessary, and there's no need to shuffle stuff around different GPUs.
@@ -160,7 +180,8 @@ class CustomDataParallel(nn.DataParallel):
 
         return [[split[device_idx] for split in splits] for device_idx in range(len(devices))], \
             [kwargs] * len(devices)
-
+    
+    '''把平行運算後的data聚集回來'''
     def gather(self, outputs, output_device):
         out = {}
 
@@ -169,33 +190,47 @@ class CustomDataParallel(nn.DataParallel):
         
         return out
 
+'''training主程式'''
 def train():
+    '''建立存檔資料夾'''
     if not os.path.exists(args.save_folder):
         os.mkdir(args.save_folder)
 
+    '''預設用COCO訓練'''
     dataset = COCODetection(image_path=cfg.dataset.train_images,
                             info_file=cfg.dataset.train_info,
                             transform=SSDAugmentation(MEANS))
-    
+    '''是否做validation'''
     if args.validation_epoch > 0:
         setup_eval()
         val_dataset = COCODetection(image_path=cfg.dataset.valid_images,
                                     info_file=cfg.dataset.valid_info,
                                     transform=BaseTransform(MEANS))
-
+    '''
+    平行包成兩個一樣的網路
+    不確定用意
+    saving跟loading不要比較好(?)
+    '''
     # Parallel wraps the underlying module, but when saving and loading we don't want that
     yolact_net = Yolact()
     net = yolact_net
     net.train()
-
+    
+    '''log資訊'''
     if args.log:
         log = Log(cfg.name, args.log_folder, dict(args._get_kwargs()),
             overwrite=(args.resume is None), log_gpu_stats=args.log_gpu)
-
+    
+    '''
+    避免平行運算出bug
+    而且yolact在training時沒有使用timer
+    保險起見關閉timer
+    '''
     # I don't use the timer during training (I use a different timing method).
     # Apparently there's a race condition with multiple GPUs, so disable it just to be safe.
     timer.disable_all()
-
+    
+    '''resume training的設定'''
     # Both of these can set args.resume to None, so do them before the check    
     if args.resume == 'interrupt':
         args.resume = SavePath.get_interrupt(args.save_folder)
@@ -211,26 +246,38 @@ def train():
     else:
         print('Initializing weights...')
         yolact_net.init_weights(backbone_path=args.save_folder + cfg.backbone.path)
-
+    
+    '''大家都用SGD'''
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
                           weight_decay=args.decay)
     criterion = MultiBoxLoss(num_classes=cfg.num_classes,
                              pos_threshold=cfg.positive_iou_threshold,
                              neg_threshold=cfg.negative_iou_threshold,
                              negpos_ratio=cfg.ohem_negpos_ratio)
-
+    '''多gpu的local batch size設定'''
     if args.batch_alloc is not None:
         args.batch_alloc = [int(x) for x in args.batch_alloc.split(',')]
         if sum(args.batch_alloc) != args.batch_size:
             print('Error: Batch allocation (%s) does not sum to batch size (%s).' % (args.batch_alloc, args.batch_size))
             exit(-1)
-
+    
+    '''平行運算(loss網路(yolact))'''
     net = CustomDataParallel(NetLoss(net, criterion))
     if args.cuda:
         net = net.cuda()
     
     # Initialize everything
+    '''
+    初始化
+    流程 = 跑一遍全黑影像初始化(?)
+    但因為全黑影像會破壞mean
+    因此不管怎樣都要在初始化前freeze_bn
+    #Note
+    freeze_bn(True)為解除freeze_bn
+    yolact.train()會自動freeze_bn
+    '''
     if not cfg.freeze_bn: yolact_net.freeze_bn() # Freeze bn so we don't kill our means
+    '''沒有包在if裡面'''
     yolact_net(torch.zeros(1, 3, cfg.max_size, cfg.max_size).cuda())
     if not cfg.freeze_bn: yolact_net.freeze_bn(True)
 
@@ -240,9 +287,12 @@ def train():
     iteration = max(args.start_iter, 0)
     last_time = time.time()
 
+    '''1 epoch = ? iterations'''
     epoch_size = len(dataset) // args.batch_size
+    '''ceiling向上取整'''
     num_epochs = math.ceil(cfg.max_iter / epoch_size)
     
+    '''每次step是用來調整learning rate'''
     # Which learning rate adjustment step are we on? lr' = lr * gamma ^ step_index
     step_index = 0
 
