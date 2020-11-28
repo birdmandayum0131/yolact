@@ -663,7 +663,7 @@ class Yolact(nn.Module):
             self.freeze_bn()
     '''
     將batch normalization layer凍結之method
-    ***pytorch官方寫法
+    ***override train()
     '''
     def freeze_bn(self, enable=False):
         """ Adapted from https://discuss.pytorch.org/t/how-to-train-with-frozen-batchnorm/12106/8 """
