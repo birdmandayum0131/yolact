@@ -121,7 +121,7 @@ if args.batch_size // torch.cuda.device_count() < 6:
     if __name__ == '__main__':
         print('Per-GPU batch size is less than the recommended limit for batch norm. Disabling batch norm.')
     cfg.freeze_bn = True
-
+'''這啥? 百事可樂?'''
 loss_types = ['B', 'C', 'M', 'P', 'D', 'E', 'S', 'I']
 
 '''看看你有沒有偷藏你的gpu不用'''
@@ -309,30 +309,60 @@ def train():
     '''
     動態平均值產生器(?)
     可以回傳固定前面n個stack的平均值
+    default n = 1000
     '''
     time_avg = MovingAverage()
-
+    
+    '''
+    哪來那麼多Loss(?)
+    n = 100
+    '''
     global loss_types # Forms the print order
     loss_avgs  = { k: MovingAverage(100) for k in loss_types }
 
     print('Begin training!')
     print()
+    '''
+    begin training
+    讓你可以用ctrl+c做interrupt的training寫法
+    '''
     # try-except so you can use ctrl+c to save early and stop training
     try:
         for epoch in range(num_epochs):
             # Resume from start_iter
+            '''
+            iteration已經被start_iter覆蓋過
+            在start_iter之前都維持continue
+            執行完後當前剩餘iteration(start_iter-current_iter)會小於一個epoch_size
+            '''
             if (epoch+1)*epoch_size < iteration:
                 continue
-            
+            '''開始拉資料(datum?)'''
             for datum in data_loader:
+                '''--------------------------------------------setting--------------------------------------------'''
                 # Stop if we've reached an epoch if we're resuming from start_iter
+                '''
+                跟上面一樣
+                若剛好做完一個epoch
+                就把training部分跳過
+                檢查最後做過的epoch的validation情況
+                '''
                 if iteration == (epoch+1)*epoch_size:
                     break
-
+                '''
+                若iteration reach到max_iter一樣處理
+                '''
                 # Stop at the configured number of iterations even if mid-epoch
                 if iteration == cfg.max_iter:
                     break
-
+                '''
+                # A list of settings to apply after the specified iteration. Each element of the list should look like
+                # (iteration, config_dict) where config_dict is a dictionary you'd pass into a config object's init.
+                用來在指定iteration改變config的寫法
+                記得指定改變的config_dict都要初始化過(key, value)
+                如果改變不少的話應該要換個寫法(?)(solved)
+                    下面一行就移除多於的設定了-_-
+                '''
                 # Change a config setting if we've reached the specified iteration
                 changed = False
                 for change in cfg.delayed_settings:
@@ -341,39 +371,72 @@ def train():
                         cfg.replace(change[1])
 
                         # Reset the loss averages because things might have changed
+                        '''config改變了 loss重新統計比較make sense(?)'''
                         for avg in loss_avgs:
                             avg.reset()
-                
+                '''移除已執行過的設定'''
                 # If a config setting was changed, remove it from the list so we don't keep checking
                 if changed:
                     cfg.delayed_settings = [x for x in cfg.delayed_settings if x[0] > iteration]
-
+                '''
+                learning rate的warm up機制(什麼怪機制)
+                如果有設定過
+                則利用linear interpolation做warmup_init~learning rate的漸進
+                '''
                 # Warm up by linearly interpolating the learning rate from some smaller value
                 if cfg.lr_warmup_until > 0 and iteration <= cfg.lr_warmup_until:
                     set_lr(optimizer, (args.lr - cfg.lr_warmup_init) * (iteration / cfg.lr_warmup_until) + cfg.lr_warmup_init)
-
+                '''
+                假如還有步數要走&&下一步的iteration已經到/過了
+                那就往下走一步
+                更新learning rate
+                就算resume也可以正常更改(robust)
+                '''
                 # Adjust the learning rate at the given iterations, but also if we resume from past that iteration
                 while step_index < len(cfg.lr_steps) and iteration >= cfg.lr_steps[step_index]:
                     step_index += 1
                     set_lr(optimizer, args.lr * (args.gamma ** step_index))
-                
+                '''--------------------------------------------setting--------------------------------------------'''
+                '''--------------------------------------------training--------------------------------------------'''
+                '''其實training的步驟也真的只有這樣'''
+                '''step 1:zero gradient'''
                 # Zero the grad to get ready to compute gradients
                 optimizer.zero_grad()
-
+                '''
+                step 2:output = network.forward(data)
+                step 3:compute loss
+                ------>loss = DataParallelModule( LossNetwork( ForwardNetwork(data)))
+                #寫成loss network以及data parallel module後
+                #看起來非常漂亮
+                '''
                 # Forward Pass + Compute loss at the same time (see CustomDataParallel and NetLoss)
                 losses = net(datum)
-                
+                '''
+                step 3:compute loss
+                因為dataparallel寫法
+                所以從網路output出來後再一起mean()
+                重新放到字典裡
+                再利用list comprehension計算總loss(loss權重呢?)
+                #inf = infinite = 正/負無限大 or NaN
+                #他有寫一個no_inf_mean
+                #只計算有限數值(no_inf)的mean值
+                '''
                 losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
                 loss = sum([losses[k] for k in losses])
                 
                 # no_inf_mean removes some components from the loss, so make sure to backward through all of it
                 # all_loss = sum([v.mean() for v in losses.values()])
-
+                '''
+                step 4:backpropagation
+                不管loss是否無限大都backward
+                先釋放Video RAM再說
+                反正只要optimizer不step都沒事(?)
+                '''
                 # Backprop
                 loss.backward() # Do this to free up vram even if loss is not finite
                 if torch.isfinite(loss).item():
                     optimizer.step()
-                
+                '''--------------------------------------------training--------------------------------------------'''
                 # Add the loss to the moving average for bookkeeping
                 for k in losses:
                     loss_avgs[k].add(losses[k].item())
