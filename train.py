@@ -295,14 +295,21 @@ def train():
     '''每次step是用來調整learning rate'''
     # Which learning rate adjustment step are we on? lr' = lr * gamma ^ step_index
     step_index = 0
-
+    '''data loader'''
     data_loader = data.DataLoader(dataset, args.batch_size,
                                   num_workers=args.num_workers,
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
     
-    
+    '''
+    定義func:save_path
+    根據epoch以及iteration產生string:path
+    '''
     save_path = lambda epoch, iteration: SavePath(cfg.name, epoch, iteration).get_path(root=args.save_folder)
+    '''
+    動態平均值產生器(?)
+    可以回傳固定前面n個stack的平均值
+    '''
     time_avg = MovingAverage()
 
     global loss_types # Forms the print order

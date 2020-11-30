@@ -5,7 +5,10 @@ import math
 from collections import deque
 from pathlib import Path
 from layers.interpolate import InterpolateModule
-
+'''
+動態平均值產生器(?)
+可以回傳固定前面n個stack的平均值
+'''
 class MovingAverage():
     """ Keeps an average window of the specified number of items. """
 
