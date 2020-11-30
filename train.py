@@ -437,62 +437,99 @@ def train():
                 if torch.isfinite(loss).item():
                     optimizer.step()
                 '''--------------------------------------------training--------------------------------------------'''
+                '''計算loss的動態平均值(包括infinte value)'''
                 # Add the loss to the moving average for bookkeeping
                 for k in losses:
                     loss_avgs[k].add(losses[k].item())
-
+                '''計算本次iteration的執行時間'''
                 cur_time  = time.time()
                 elapsed   = cur_time - last_time
                 last_time = cur_time
-
+                '''
+                第一個iteration包含了setup的時間
+                不列入計算
+                '''
                 # Exclude graph setup from the timing information
                 if iteration != args.start_iter:
                     time_avg.add(elapsed)
-
+                '''每10個iteration顯示一次'''
                 if iteration % 10 == 0:
+                    '''format:eta_str = hr:min:sec(.後的毫秒被split掉了)'''
                     eta_str = str(datetime.timedelta(seconds=(cfg.max_iter-iteration) * time_avg.get_avg())).split('.')[0]
-                    
+                    '''loss加總成total loss'''
                     total = sum([loss_avgs[k].get_avg() for k in losses])
+                    '''
+                    將loss整理成一個list:[key, value, key, value]形式
+                    #內制函數sum會根據初始值來決定加總方式
+                    #初始值default=0
+                    #若設定為空陣列即可用來做陣列合併
+                    '''
                     loss_labels = sum([[k, loss_avgs[k].get_avg()] for k in loss_types if k in losses], [])
-                    
+                    '''顯示資訊'''
                     print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || ETA: %s || timer: %.3f')
                             % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
-
+                '''log資訊到log檔中'''
                 if args.log:
+                    '''四捨五入的小數點精確位'''
                     precision = 5
+                    '''全部取到第5位'''
                     loss_info = {k: round(losses[k].item(), precision) for k in losses}
+                    '''增加一個T來放total loss'''
                     loss_info['T'] = round(loss.item(), precision)
-
+                    '''很慢 不要隨便用'''
                     if args.log_gpu:
                         log.log_gpu_stats = (iteration % 10 == 0) # nvidia-smi is sloooow
-                        
+                    '''log主程式'''    
                     log.log('train', loss=loss_info, epoch=epoch, iter=iteration,
                         lr=round(cur_lr, 10), elapsed=elapsed)
 
                     log.log_gpu_stats = args.log_gpu
-                
+                '''該iteration正式結束'''
                 iteration += 1
-
+                '''
+                每save_interval個iteration就做一個checkpoint
+                start_iter就不用多存一次了
+                '''
                 if iteration % args.save_interval == 0 and iteration != args.start_iter:
+                    '''
+                    只保留最後一個checkpoint的選項
+                    要隨時把舊的checkpoint刪除
+                    所以把檔名先記起來
+                    應該會獲得"上一個檔案"的名字
+                    '''
                     if args.keep_latest:
                         latest = SavePath.get_latest(args.save_folder, cfg.name)
-
+                    '''顯示iteration'''
                     print('Saving state, iter:', iteration)
+                    '''做checkpoint'''
                     yolact_net.save_weights(save_path(epoch, iteration))
-
+                    '''
+                    若有開啟只存最後的checkpoint
+                    而且上一個檔名是存在的話
+                    代表有舊檔案需要被刪除了
+                    '''
                     if args.keep_latest and latest is not None:
+                        '''
+                        若keep_latest_interval <= 0代表真的只留最後的檔案
+                        若還有值代表間格keep_latest_interval個iteration還是會存一次的
+                        '''
                         if args.keep_latest_interval <= 0 or iteration % args.keep_latest_interval != args.save_interval:
                             print('Deleting old save...')
                             os.remove(latest)
-            
+            '''一次iteration正式結束'''
+            '''每個epoch都會檢查的部分'''
+            '''若validation_epoch存在'''
             # This is done per epoch
             if args.validation_epoch > 0:
+                '''若非第一個epoch且是validation_epoch'''
                 if epoch % args.validation_epoch == 0 and epoch > 0:
+                    '''做validation'''
                     compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None)
-        
+        '''training結束時再做一次validation'''
         # Compute validation mAP after training is finished
         compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None)
     except KeyboardInterrupt:
+        '''此段可以讓ctrl+c儲存iterrupt的model'''
         if args.interrupt:
             print('Stopping early. Saving network...')
             
@@ -501,7 +538,7 @@ def train():
             
             yolact_net.save_weights(save_path(epoch, repr(iteration) + '_interrupt'))
         exit()
-
+    '''training結束時再存一次'''
     yolact_net.save_weights(save_path(epoch, iteration))
 
 
