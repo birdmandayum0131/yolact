@@ -160,3 +160,8 @@ vidres/
 _.py
 *.jpg
 *.png
+camel2.zip
+camel1.zip
+tmpcoef/noise_car4.txt
+tmpcoef/car6.txt
+tmpcoef/car4.txt

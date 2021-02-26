@@ -51,7 +51,7 @@ def parse_args(argv=None):
                         help='output 8bit palette int png file for DAVIS evaluate')
     parser.add_argument('--fast_nms', default=True, type=str2bool, #是否使用論文提出之fast nms (default true)
                         help='Whether to use a faster, but not entirely correct version of NMS.')
-    parser.add_argument('--cross_class_nms', default=True, type=str2bool, #nms計算時是否分class(default true)
+    parser.add_argument('--cross_class_nms', default=True, type=str2bool, #nms計算時是否不分class(default true)
                         help='Whether compute NMS cross-class or per-class.')
     parser.add_argument('--display_masks', default=True, type=str2bool,#結果是否顯示mask
                         help='Whether or not to display masks over bounding boxes')
@@ -122,7 +122,7 @@ def parse_args(argv=None):
     '''
     parser.add_argument('--video_multiframe', default=1, type=int, 
                         help='The number of frames to evaluate in parallel to make videos play at higher fps.')
-    parser.add_argument('--score_threshold', default=0.45, type=float, #0.45
+    parser.add_argument('--score_threshold', default=0.1, type=float, #0.45
                         help='Detections with a score under this threshold will not be considered. This currently only works in display mode.')
     parser.add_argument('--dataset', default=None, type=str,
                         help='If specified, override the dataset specified in the config with this one (example: coco2017_dataset).')
@@ -136,7 +136,15 @@ def parse_args(argv=None):
     parser.set_defaults(no_bar=False, display=False, resume=False, output_coco_json=False, output_web_json=False, shuffle=False,
                         benchmark=False, no_sort=False, no_hash=False, mask_proto_debug=False, crop=True, detect=False, display_fps=False,
                         emulate_playback=False)
-
+    '''
+    我加的
+    coefDebug mode
+    會將↓↓↓↓↓指定的coefficient output至檔案
+    '''
+    parser.add_argument('--coefDebug', default=False, dest='coefDebug', action='store_true', help='active coefficients debug mode')
+    parser.add_argument('--debugID', default=0, type=int, help='the object ID which you want to focus on')
+    parser.add_argument('--debugFileName', default=None, type=str, help='the file that stores the specified object coefficients')
+    
     global args
     args = parser.parse_args(argv)
 
@@ -145,11 +153,15 @@ def parse_args(argv=None):
     
     if args.seed is not None:
         random.seed(args.seed)
+        
+    
 
 iou_thresholds = [x / 100 for x in range(50, 100, 5)]
 coco_cats = {} # Call prep_coco_cats to fill this
 coco_cats_inv = {}
 color_cache = defaultdict(lambda: {})
+frameCount = 0
+specifiedFrames = list(range(0,74+1))
 
 def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, fps_str=''):
     """
@@ -192,7 +204,17 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
     '''
     將比較feature vector distance的code轉移到這裡來
     '''
+    specifiedCoef = None
     def calc_object_id(dets):
+        def cosSim_matrix(a, b, eps=1e-8):
+            """
+            added eps for numerical stability
+            """
+            a_n, b_n = a.norm(dim=1)[:, None], b.norm(dim=1)[:, None]
+            a_norm = a / torch.max(a_n, eps * torch.ones_like(a_n))
+            b_norm = b / torch.max(b_n, eps * torch.ones_like(b_n))
+            sim_mt = torch.mm(a_norm, b_norm.transpose(0, 1))
+            return sim_mt
         classes, scores, boxes, masks, remain_object_vector = dets
         '''
         remain_object_vector.shape = torch.Size([R, 32])
@@ -235,7 +257,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             #因此distance的value會介於range(0, 11.3137) #(1-(-1))^2 * 32 = 11.3137^2
             KtoNdist.shape = torch.Size([K, N])
             '''
-            KtoNdist = torch.cdist(remain_object_vector, cfg._tmp_objectList)
+            #KtoNdist = torch.cdist(remain_object_vector, cfg._tmp_objectList)
+            KtoNdist = cosSim_matrix(remain_object_vector, cfg._tmp_objectList)
             #print(KtoNdist)
             '''
             計算最短距離的distance以及indices
@@ -249,11 +272,15 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             '''
             matchMatrix_A = torch.zeros(KtoNdist.shape).cuda().long()
             matchMatrix_B = torch.zeros(KtoNdist.shape).cuda().long()
-            _tmp_min_dist, _tmp_min_indices = torch.min(KtoNdist, dim = 1) #K_min_dist, K_min_indices
-            matchMatrix_A[ range(matchMatrix_A.shape[0]),_tmp_min_indices] = 1
+            #_tmp_min_dist, _tmp_min_indices = torch.min(KtoNdist, dim = 1) #K_min_dist, K_min_indices
+            #matchMatrix_A[ range(matchMatrix_A.shape[0]),_tmp_min_indices] = 1
+            _tmp_max_dist, _tmp_max_indices = torch.max(KtoNdist, dim = 1) #K_min_dist, K_min_indices
+            matchMatrix_A[ range(matchMatrix_A.shape[0]),_tmp_max_indices] = 1
             
-            _tmp_min_dist, _tmp_min_indices = torch.min(KtoNdist, dim = 0) #N_min_dist, N_min_indices
-            matchMatrix_B[ _tmp_min_indices, range(matchMatrix_B.shape[1])] = 1
+            #_tmp_min_dist, _tmp_min_indices = torch.min(KtoNdist, dim = 0) #N_min_dist, N_min_indices
+            #matchMatrix_B[ _tmp_min_indices, range(matchMatrix_B.shape[1])] = 1
+            _tmp_max_dist, _tmp_max_indices = torch.max(KtoNdist, dim = 0) #N_min_dist, N_min_indices
+            matchMatrix_B[ _tmp_max_indices, range(matchMatrix_B.shape[1])] = 1
             '''
             matchMatrix_A.shape = matchMatrix_B.shape = isOverThreshold.shape = KtoNdist.shape
             K_max_indices.shape = torch.Size([K]) 為了輸出idTensor用
@@ -265,7 +292,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             經過三matrix 之intersection留下的視為有對應到object list
             ***未來可優化threshold
             '''
-            isOverThreshold = (KtoNdist < cfg.coefficients_dist_threshold).long()
+            isOverThreshold = (KtoNdist > cfg.coefficients_dist_threshold).long()
             matchMatrix = ((matchMatrix_A + matchMatrix_B + isOverThreshold) == 3).long()
             
             _tmp_max_dist, _tmp_max_indices = torch.max(matchMatrix, dim = 1) # K_max_indices
@@ -316,7 +343,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             #print(idTensor)
             
             
-        return classes, scores, boxes, masks, idTensor.cpu().numpy()
+        return classes, scores, boxes, masks, idTensor.cpu().numpy(), remain_object_vector
         
         
     with timer.env('Copy'):
@@ -333,7 +360,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             shape = torch.Size([L, 32])
             L <= 15(args.top_k)
             '''
-            classes, scores, boxes, masks, ids = calc_object_id( [classes, scores, boxes, masks, t[4][idx]] )
+            classes, scores, boxes, masks, ids, coefs = calc_object_id( [classes, scores, boxes, masks, t[4][idx]] )
             
         classes, scores, boxes = classes.cpu().numpy(), scores.cpu().numpy(), boxes.cpu().numpy()
 
@@ -375,9 +402,14 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             remainingMask = np.ones(( 1, h, w, 1)).astype(np.uint8)
             masks = masks[:num_dets_to_consider, :, :, None].cpu().numpy().astype(np.uint8)
             for i in range(num_dets_to_consider):
-                paletteMask = paletteMask + remainingMask*masks[i]*(ids[i]+1 if ids[i]+1 < 33 else 0)
+                if args.coefDebug:
+                    paletteMask = paletteMask + remainingMask*masks[i]*(ids[i]+1 if ids[i]+1 == args.debugID else 0)
+                    if ids[i]+1 == args.debugID:
+                        specifiedCoef = coefs[i]
+                else:
+                    paletteMask = paletteMask + remainingMask*masks[i]*(ids[i]+1 if ids[i]+1 < 33 else 0)
                 remainingMask = remainingMask - ( remainingMask * masks[i] )
-        return paletteMask
+        return paletteMask, specifiedCoef
     # First, draw the masks on the GPU where we can do it really fast
     # Beware: very fast but possibly unintelligible mask-drawing code ahead
     # I wish I had access to OpenGL or Vulkan but alas, I guess Pytorch tensor operations will have to suffice
@@ -803,7 +835,14 @@ def evalimage(net:Yolact, path:str, save_path:str=None):
     '''
     將mask與origial image合成
     '''
-    img_numpy = prep_display(preds, frame, None, None, undo_transform=False)
+    img_numpy, specifiedCoef = prep_display(preds, frame, None, None, undo_transform=False)
+    if args.coefDebug:
+        global frameCount, specifiedFrames
+        if specifiedCoef != None:
+            coefFile.write(str(frameCount)+(' 1'if frameCount in specifiedFrames else ' 0'))
+            for i in range(specifiedCoef.shape[0]):
+                coefFile.write(' '+str(specifiedCoef[i].item()))
+            coefFile.write('\n')
     '''
     轉換為BGR
     '''    
@@ -858,6 +897,9 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
     ***超不會用!!!
     直接用下面方法
     '''
+    if args.coefDebug:
+        global frameCount
+        frameCount = 0
     cfg._tmp_init_objList_mode = True
     for p in Path(input_folder).glob('*'): #read all images in input folder
         '''
@@ -872,6 +914,8 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
         call evalimage
         '''
         evalimage(net, path, out_path)
+        if args.coefDebug:
+            frameCount += 1
         print(path + ' -> ' + out_path)
     print('Done.')
 def evalDAVISdatafile(net:Yolact, input_file:str, output_folder:str, data_root_dir:str = "D:/Bird/DAVIS/JPEGImages/480p/"):
@@ -1362,6 +1406,11 @@ def print_maps(all_maps):
 
 if __name__ == '__main__':
     parse_args()
+    '''
+    coefDebug setup
+    '''
+    if args.coefDebug:
+        coefFile = open(args.debugFileName, 'w')
     '''
     load model
     似乎可以訓練中途eval ?
