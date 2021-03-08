@@ -1,0 +1,85 @@
+20 10
+detections = crnt detect STrack list
+
+self.tracked_stracks -> activated -> tracked_stracks  (past track)
+self.tracked_stracks -> not activated -> unconfirm
+
+strack_pool = tracked_stracks + self.lost_stracks (what we want to track in current frame)
+
+#use kalman filter to predict the current loacation 
+strack_pool.multi_predict
+
+calculate dist(strack_pool, detections)
+dist.fusemotion
+
+#maching
+linear_assignment(dist, threshold = 0.4)
+matches = matched
+u_track = unmatched_track(strack_pool)
+u_detection = unmatched_detection(detections)
+
+#for matched track and detection
+if track.state == Tracked (past frame also tracked)(activated?)
+    track.update(detection)
+    activated_stracks.append(track)
+else (past frame not tracked)(not activated?)(from self.lost_stracks ?)
+    track.re_activated(detection, dont need new id)
+    refind_stracks.append(track)
+    
+#for unmatched detection
+#match those activated unmatched track with IoU
+detections = unmatched_detection
+r_tracked_stracks = [unmatched_track.state == Tracked]
+calculate dist(r_tracked_stracks, detections)
+assignment again(threshold = 0.5)
+matches = matched
+u_track = still unmatched track
+u_detection = still unmatched_detection
+
+#for those IoU matched track and detection
+if track.state == Tracked (past frame also tracked)(activated?)
+    track.update(detection)
+    activated_stracks.append(track)
+else( wont execute?)
+    track.re_activated(detection, dont need new id)
+    refind_stracks.append(track)
+    
+#for those still unmatched_track
+track.state = lost
+lost_stracks.append(track)
+
+#for those still unmatched_detection
+#use IoU match them with unconfirm track
+detections = unmatched_detection
+calculate dist(unconfirm, detections)
+linear_assignment(threshold=0.7)
+matches = matched
+u_unconfirm = unmatched_unconfirm
+u_detection = still unmatched_detection
+
+#for those matched unconfirm
+unconfirm.update(detection)(make it activated)
+activated_stracks.append(track)
+
+#for those unmatched_unconfirm remove them
+unmatched_unconfirm.remove
+removed_stracks.append(unmatched_unconfirm)
+
+#for those still unmatched_detection
+if score < threshold
+    skip
+track = unmatched_detection
+track.activated
+activated_stracks.append(track)
+
+#for self.lost_stracks lost too much frame
+track.remove
+removed_stracks.append(track)
+
+#update
+self.tracked_stracks = [past self.tracked_stracks if state==tracked] + activated_stracks + refind_stracks
+self.lost_stracks = past self.lost_stracks - refind_stracks + lost_stracks - removed_stracks
+self.removed_stracks = past self.removed_stracks + removed_stracks
+
+remove duplicate strack(self.tracked_stracks, self.lost_stracks)
+
