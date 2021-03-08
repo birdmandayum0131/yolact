@@ -163,7 +163,16 @@ color_cache = defaultdict(lambda: {})
 frameCount = 0
 specifiedFrames = list(range(14,74+1))
 
+'''
+add from FairMoT
+模仿JDETracker之field
+'''
+tracked_stracks = []#正在追蹤的STrack object
+lost_stracks = []#已經丟失的STrack object
+remove_stracks = []#停止追蹤的STrack object
+
 def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, fps_str=''):
+    
     """
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
     """
