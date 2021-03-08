@@ -28,6 +28,10 @@ from PIL import Image
 
 import matplotlib.pyplot as plt
 import cv2
+'''
+使用FairMoT製作的Track Object
+'''
+from tracker.multitracker import STrack
 
 def str2bool(v): #判斷cmd輸入args的布林值
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -172,7 +176,10 @@ lost_stracks = []#已經丟失的STrack object
 remove_stracks = []#停止追蹤的STrack object
 
 def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, fps_str=''):
-    
+    crnt_activated_stracks = []
+    crnt_refind_stracks = []
+    crnt_lost_stracks = []
+    crnt_removed_stracks = []
     """
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
     """
