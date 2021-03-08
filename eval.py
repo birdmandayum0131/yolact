@@ -161,7 +161,7 @@ coco_cats = {} # Call prep_coco_cats to fill this
 coco_cats_inv = {}
 color_cache = defaultdict(lambda: {})
 frameCount = 0
-specifiedFrames = list(range(0,74+1))
+specifiedFrames = list(range(14,74+1))
 
 def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, fps_str=''):
     """
