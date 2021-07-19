@@ -47,7 +47,7 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
     將此處移至re-id部分
     以便於控制變化的threshold
     '''
-    
+    '''
     if score_threshold > 0:
         keep = dets['score'] > score_threshold
 
@@ -57,6 +57,7 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
         
         if dets['score'].size(0) == 0:
             return [torch.Tensor()] * 5+ [proto_data]
+    '''
     
     
     # Actually extract everything from dets now
