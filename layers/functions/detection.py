@@ -52,6 +52,7 @@ class Detect(object):
 
         loc_data   = predictions['loc']
         conf_data  = predictions['conf']
+        
         mask_data  = predictions['mask']
         prior_data = predictions['priors']
 
@@ -70,11 +71,12 @@ class Detect(object):
                 decoded_boxes = decode(loc_data[batch_idx], prior_data)
                 result = self.detect(batch_idx, conf_preds, decoded_boxes, mask_data, inst_data)
 
+                '''
                 if result is not None and proto_data is not None:
                     result['proto'] = proto_data[batch_idx]
-
-                out.append({'detection': result, 'net': net})
-        
+                '''
+                #out.append({'detection': result, 'net': net})
+                out.append({'detection': result, 'net': net, 'proto':proto_data[batch_idx]})        
         return out
 
 

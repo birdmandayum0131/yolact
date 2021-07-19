@@ -4,8 +4,11 @@ import os
 
 vector_dimension = 32
 inputPath=r"D:\Bird\GitHub\yolact\coef"
+#crossing car 25
+#car-roundabout_1 57
 
-
+#car-roundabout_4 7
+#car-roundabout_6 4
     
 def hausdorffDistance(setA, setB, distance_func):
     AtoB = []
@@ -13,15 +16,15 @@ def hausdorffDistance(setA, setB, distance_func):
         ItoB = []
         for j in setB:
             ItoB.append(distance_func(i,j))
-        AtoB.append(min(ItoB))
-    
+        AtoB.append(min(ItoB))       
+        
     BtoA = []
     for i in setB:
         ItoA = []
         for j in setA:
             ItoA.append(distance_func(i,j))
         BtoA.append(min(ItoA))
-    
+        
     return max(max(AtoB), max(BtoA))
 
 for filei in os.listdir(inputPath):
@@ -54,5 +57,5 @@ for filei in os.listdir(inputPath):
         
         euclidean_Distance_between_AB = hausdorffDistance(setA, setB, spatial.distance.euclidean)
         cosine_Distance_between_AB = hausdorffDistance(setA, setB, spatial.distance.cosine)
-        
         print('distance between %25s & %25s : cosine[%.4f] euclidean[%.4f]'%( objectA, objectB, cosine_Distance_between_AB, euclidean_Distance_between_AB))
+        print(setA.shape[0])

@@ -35,6 +35,11 @@ class BaseTrack(object):
     def next_id():
         BaseTrack._count += 1
         return BaseTrack._count
+    
+    @staticmethod   
+    def init_id():
+        BaseTrack._count = 0
+        return
 
     def activate(self, *args):
         raise NotImplementedError
@@ -50,3 +55,4 @@ class BaseTrack(object):
 
     def mark_removed(self):
         self.state = TrackState.Removed
+        

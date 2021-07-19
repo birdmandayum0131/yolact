@@ -5,7 +5,8 @@ import pickle
 from collections import OrderedDict
 
 try:
-    from dcn_v2 import DCN
+    #from dcn_v2 import DCN
+    from DCN import DCN
 except ImportError:
     def DCN(*args, **kwdargs):
         raise Exception('DCN could not be imported. If you want to use YOLACT++ models, compile DCN. Check the README for instructions.')

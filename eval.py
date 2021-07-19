@@ -1,11 +1,11 @@
-from data import COCODetection, get_label_map, MEANS, COLORS, PALETTE
+from data import COCODetection, get_label_map, MEANS, COLORS, PALETTE, PALETTE_SEABORN
 from yolact import Yolact
 from utils.augmentations import BaseTransform, FastBaseTransform, Resize
 from utils.functions import MovingAverage, ProgressBar
 from layers.box_utils import jaccard, center_size, mask_iou
 from utils import timer
 from utils.functions import SavePath
-from layers.output_utils import postprocess, undo_image_transformation
+from layers.output_utils import postprocess, undo_image_transformation, reproduce_mask
 import pycocotools
 
 from data import cfg, set_cfg, set_dataset
@@ -32,6 +32,14 @@ import cv2
 使用FairMoT製作的Track Object
 '''
 from tracker.multitracker import STrack
+from tracker.multitracker import joint_stracks
+from tracker.multitracker import sub_stracks
+from tracker.multitracker import remove_duplicate_stracks
+from tracker import matching
+from tracking_utils.kalman_filter import KalmanFilter
+from filterpy.kalman import KalmanFilter as fpy_KalmanFilter
+from tracker.basetrack import TrackState ,BaseTrack
+from tracking_utils.log import logger
 
 def str2bool(v): #判斷cmd輸入args的布林值
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -45,7 +53,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description='YOLACT COCO Evaluation')
     parser.add_argument('--trained_model', #model weight的選擇 預設為ssd 300
-                        default='weights/yolact_im700_54_800000.pth', type=str,
+                        default='weights/yolact_plus_base_54_800000.pth', type=str,
                         help='Trained state_dict file path to open. If "interrupt", this will open the interrupt file.')
     parser.add_argument('--top_k', default=15, type=int, #預測top k個預測結果
                         help='Further restrict the number of predictions to parse')
@@ -81,7 +89,7 @@ def parse_args(argv=None):
                         help='The output file for coco bbox results if --coco_results is set.')
     parser.add_argument('--mask_det_file', default='results/mask_detections.json', type=str,
                         help='The output file for coco mask results if --coco_results is set.')
-    parser.add_argument('--config', default=None,
+    parser.add_argument('--config', default='yolact_plus_base_config',
                         help='The config object to use.')
     parser.add_argument('--output_web_json', dest='output_web_json', action='store_true',
                         help='If display is not set, instead of processing IoU values, this dumps detections for usage with the detections viewer web thingy.')
@@ -126,7 +134,7 @@ def parse_args(argv=None):
     '''
     parser.add_argument('--video_multiframe', default=1, type=int, 
                         help='The number of frames to evaluate in parallel to make videos play at higher fps.')
-    parser.add_argument('--score_threshold', default=0.1, type=float, #0.45
+    parser.add_argument('--score_threshold', default=0.45, type=float, #0.45
                         help='Detections with a score under this threshold will not be considered. This currently only works in display mode.')
     parser.add_argument('--dataset', default=None, type=str,
                         help='If specified, override the dataset specified in the config with this one (example: coco2017_dataset).')
@@ -148,7 +156,27 @@ def parse_args(argv=None):
     parser.add_argument('--coefDebug', default=False, dest='coefDebug', action='store_true', help='active coefficients debug mode')
     parser.add_argument('--debugID', default=0, type=int, help='the object ID which you want to focus on')
     parser.add_argument('--debugFileName', default=None, type=str, help='the file that stores the specified object coefficients')
-    
+    parser.add_argument('--intchCoef', default=False, dest='intchCoef', action='store_true', help='active interchange coefficients debug mode')
+    '''
+    我加的
+    yolact-kalman settings
+    '''
+    parser.add_argument('--max_time_lost', default=3, type=int, help='if a tracklet lost frames that more than this number, it will be removed')
+    parser.add_argument('--use_IoU_distance', default=True, type=str2bool, help='use IoU to perform the second matching section')
+    parser.add_argument('--coef_threshold', default=0.1, type=float, help='coef similarity matching threshold(any two track have distance "longer" than this value will be separate)')
+    parser.add_argument('--basic_match_mode', default=False, type=str2bool, help='use basic coef distance matching rule to inference')
+    parser.add_argument('--sep_confirm_det', default=True, type=str2bool, help='matching distance between confirmed/unconfirmed tracklet and detection separately')
+    parser.add_argument('--use_mask_bbox', default=True, type=str2bool, help='use mask to calculate better bounding box')
+    parser.add_argument('--fuse_maha', default=False, type=str2bool, help='fuse distance with mahalanobis gating distance')
+    parser.add_argument('--fuse_iou', default=True, type=str2bool, help='fuse embedding distance with iou distance')
+    parser.add_argument('--use_bbox_kalman', default=True, dest='use_bbox_kalman', action='store_true', help='use FairMoT kalman filter to refine bounding box')
+    parser.add_argument('--use_coef_kalman', default=False, dest='use_coef_kalman', action='store_true', help='use filterpy kalman filter to refine coefficients')
+    parser.add_argument('--use_score_confidence', default=False, dest='use_score_confidence', action='store_true', help='use confidience score to estimate measurement uncertainty/noise and Process uncertainty/noise (P and Q)')
+    parser.add_argument('--linear_coef', default=True, dest='linear_coef', action='store_true', help='combine tracklet coef with detection coef from linear function')
+    parser.add_argument('--match_cls_respective', default=True, dest='match_cls_respective', action='store_true', help='add extra distance when two tracklet have different class ID')
+    parser.add_argument('--assignment_stragegy', default='linear', type=str, help='use linear/greedy assignment rule on matching state')
+    parser.add_argument('--use_coef_motion_model', default=False, dest='use_coef_motion_model', action='store_true', help='use coef velocity to construct a motion model')
+    parser.add_argument('--use_coef_gmm', default=False, dest='use_coef_gmm', action='store_true', help='use GMM to modeling coefficients')
     global args
     args = parser.parse_args(argv)
 
@@ -157,16 +185,30 @@ def parse_args(argv=None):
     
     if args.seed is not None:
         random.seed(args.seed)
-        
     
+    if args.basic_match_mode:
+        args.use_IoU_distance = False
+        args.max_time_lost = 500
+        args.coef_threshold=0.99
+        args.sep_confirm_det = False
+        args.use_mask_bbox = False
+        args.fuse_maha = False
+        args.use_bbox_kalman = False
+        args.use_coef_kalman = False
+        args.use_score_confidence = False
+        args.linear_coef = False
+        args.assignment_stragegy = 'greedy'
 
 iou_thresholds = [x / 100 for x in range(50, 100, 5)]
 coco_cats = {} # Call prep_coco_cats to fill this
 coco_cats_inv = {}
 color_cache = defaultdict(lambda: {})
 frameCount = 0
-specifiedFrames = list(range(14,74+1))
-
+specifiedFrames = list(range(0,100))
+targetB = "-0.84978116 0.9993366 0.4927853 0.78351974 -0.08754228 -0.95587176 0.9896584 0.078741685 -0.7218755 -0.82703686 -0.65067476 -0.9766999 0.7225313 -0.39497077 0.91027635 -0.42399558 0.422405 -0.5678872 0.4842291 -0.99141026 0.9978306 0.9946088 0.74292576 -0.99513054 0.8557076 -0.4012566 0.94491756 0.23494908 -0.9048723 -0.9981619 0.7952656 0.91314834"
+targetA = "-0.6959238 0.5996523 0.7367556 -0.37150833 -0.15145104 -0.52293694 0.93600756 0.1872456 0.58935213 0.43319765 0.10295015 -0.9816708 -0.056961227 -0.23823825 0.920799 0.9600848 0.21750794 0.49340916 0.22230512 -0.7187691 0.983567 0.49103805 -0.91508555 -0.9923941 -0.118909255 0.2365543 -0.37181866 0.24728283 -0.6207863 -0.9746275 0.06892245 0.8495707"
+targetCoef = torch.tensor([float(i) for i in targetA.split()])
+substituteCoef = torch.tensor([float(i) for i in targetB.split()])
 '''
 add from FairMoT
 模仿JDETracker之field
@@ -174,8 +216,16 @@ add from FairMoT
 tracked_stracks = []#正在追蹤的STrack object
 lost_stracks = []#已經丟失的STrack object
 remove_stracks = []#停止追蹤的STrack object
+public_kalman_filter = KalmanFilter()
 
 def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, fps_str=''):
+    
+    '''
+    reference from FairMoT
+    record tracklets state in current frame
+    '''
+    global tracked_stracks, lost_stracks, remove_stracks, public_kalman_filter
+    
     crnt_activated_stracks = []
     crnt_refind_stracks = []
     crnt_lost_stracks = []
@@ -211,16 +261,25 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         將prediction result轉換為合理的輸出
         回傳4個tensor(因為利用gpu加速)
         '''
+        global frameCount
+        if args.intchCoef:
+            global specifiedFrames
+            if frameCount in specifiedFrames:
+                for det_idx in range(dets_out[0]['detection']['mask'].shape[0]):
+                    if torch.all(targetCoef.eq(dets_out[0]['detection']['mask'][det_idx].cpu())):
+                        dets_out[0]['detection']['mask'][det_idx] = substituteCoef.cuda()
+                
         t = postprocess(dets_out, w, h, visualize_lincomb = args.display_lincomb,
                                         crop_masks        = args.crop,
-                                        score_threshold   = args.score_threshold)
+                                        score_threshold   = args.score_threshold,
+                                        use_mask_bbox     = args.use_mask_bbox)
         cfg.rescore_bbox = save
         
         
     '''
     將比較feature vector distance的code轉移到這裡來
     '''
-    specifiedCoef = None
+    specifiedCoef = np.zeros(0)
     def calc_object_id(dets):
         def cosSim_matrix(a, b, eps=1e-8):
             """
@@ -361,26 +420,175 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             
         return classes, scores, boxes, masks, idTensor.cpu().numpy(), remain_object_vector
         
-        
-    with timer.env('Copy'):
+    
+    with timer.env('Matching'):
         idx = t[1].argsort(0, descending=True)[:args.top_k]
         
-        if cfg.eval_mask_branch:
-            # Masks are drawn on the GPU, so don't copy
-            masks = t[3][idx]
+        classes, scores, boxes, masks, coefs = [x[idx] for x in t[:5]]
+        protos = t[5]
+        keep = scores > 0
+        classes, scores, boxes, masks, coefs = classes[keep], scores[keep], boxes[keep], masks[keep], coefs[keep]
+
         
-        classes, scores, boxes = [x[idx] for x in t[:3]]
+        '''
+        --------------------------------------------tracklet section--------------------------------------------
+        '''
+        if dets_out[0]['detection'] is None:
+            detections = []
+        else:
+            detections = [STrack(detection[0], detection[1], STrack.tlbr_to_tlwh(detection[2]), detection[3], detection[4]) for detection in zip(classes.cpu().numpy(), scores.cpu().numpy(), boxes.cpu().numpy(), masks.cpu().numpy(), coefs.cpu().numpy())]
+        '''
+        unconfirmed tracklet(not match in two consecutive frame) will have low priority in match section
+        '''
+
+        unconfirmed = []
+        confirmed = []
+        if args.assignment_stragegy=='greedy': assignment_func = matching.greedy_assignment
+        elif args.assignment_stragegy=='linear': assignment_func = matching.linear_assignment
         
-        if cfg.eval_mask_branch and cfg.use_on_img_stream:
-            '''
-            shape = torch.Size([L, 32])
-            L <= 15(args.top_k)
-            '''
-            classes, scores, boxes, masks, ids, coefs = calc_object_id( [classes, scores, boxes, masks, t[4][idx]] )
+        for track in tracked_stracks:
+            if not track.is_activated:
+                unconfirmed.append(track)
+            else:
+                confirmed.append(track)
+        if args.sep_confirm_det:
+            strack_pool = joint_stracks(confirmed, lost_stracks)
+        else:
+            strack_pool = joint_stracks(tracked_stracks, lost_stracks)
+        # use kalman filter to predict current state from previous frame
+        if cfg.use_bbox_kalman:
+            STrack.multi_predict(strack_pool)
+        if cfg.use_coef_kalman and cfg.linear_coef:
+            for track in strack_pool:
+                track.predict_coef()
+        for track in strack_pool:
+            '''predict next mask'''
+            noise = track.predict_mask(protos)
+        dists = matching.embedding_distance(strack_pool, detections)
+        '''fuse mahalanobis distance'''
+        if args.fuse_maha:
+            dists = matching.fuse_motion(public_kalman_filter, dists, strack_pool, detections)
+        if args.fuse_iou:
+            iou_dists = matching.mask_iou_distance(strack_pool, detections)
+            dists = matching.fuse_maskiou(dists,iou_dists,iou_threshold=0.5)
+        '''first matching section use coefs vector distance'''
+        matches, u_track, u_detection = assignment_func(dists, thresh=args.coef_threshold)
+        for itracked, idet in matches:
+            track = strack_pool[itracked]
+            det = detections[idet]
+            '''separate confirmed & lost'''
+            if track.state == TrackState.Tracked:
+                noise = track.update(detections[idet], frameCount, protos)
+                if noise:
+                    track.mark_removed()
+                    crnt_removed_stracks.append(track)
+                    continue
+                crnt_activated_stracks.append(track)
+            else:
+                noise = track.re_activate(det, frameCount, protos, new_id=False)
+                if noise:
+                    track.mark_removed()
+                    crnt_removed_stracks.append(track)
+                    continue
+                crnt_refind_stracks.append(track)
+        '''second matching section use IoU distance'''
+        if args.use_IoU_distance and not args.fuse_iou:
+            detections = [detections[i] for i in u_detection]
+            #we don't use iou distance to match lost tracklets
+            strack_pool = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
+            dists = matching.mask_iou_distance(strack_pool, detections)
+            matches, u_track, u_detection = assignment_func(dists, thresh=0.5)
+            for itracked, idet in matches:
+                track = strack_pool[itracked]
+                det = detections[idet]
+                if track.state == TrackState.Tracked:
+                    noise = track.update(det, frameCount, protos)
+                    if noise:
+                        track.mark_removed()
+                        crnt_removed_stracks.append(track)
+                        continue
+                    
+                    crnt_activated_stracks.append(track)
+                else:
+                    #I don't think this part will execute cuz of lost_stracks might not match in this section(but is exists in FairMoT)
+                    #it may be want making two parts above can remove easily
+                    noise = track.re_activate(det, frameCount, protos, new_id=False)
+                    if noise:
+                        track.mark_removed()
+                        crnt_removed_stracks.append(track)
+                        continue
+                    crnt_refind_stracks.append(track)
+        '''mark lost'''
+        for it in u_track:
+            track = strack_pool[it]
+            #I think the if statement also make two parts above can remove easily
+            if not track.state == TrackState.Lost:
+                track.mark_lost()
+                crnt_lost_stracks.append(track)
+        '''third matching section - match unconfirmed tracks'''
+        if args.sep_confirm_det:
+            detections = [detections[i] for i in u_detection]
+            dists = matching.mask_iou_distance(unconfirmed, detections)
+            if args.fuse_iou:
+                emb_dists = matching.embedding_distance(unconfirmed, detections)
+                dists = matching.fuse_maskiou(emb_dists,dists,iou_threshold=0.5)
+            matches, u_unconfirmed, u_detection = assignment_func(dists, thresh=0.5)
+            for iunconfirmed, idet in matches:
+                track = unconfirmed[iunconfirmed]
+                noise = track.update(detections[idet], frameCount, protos)
+                if noise:
+                    track.mark_removed()
+                    crnt_removed_stracks.append(track)
+                    continue
+                crnt_activated_stracks.append(unconfirmed[iunconfirmed])
+            for it in u_unconfirmed:
+                track = unconfirmed[it]
+                track.mark_removed()
+                crnt_removed_stracks.append(track)
+            
+        '''init new tracklets'''
+        for inew in u_detection:
+            track = detections[inew]
+            if track.score < args.score_threshold:
+                continue
+            track.activate(public_kalman_filter, frameCount)
+            crnt_activated_stracks.append(track)
+        '''remove lost track(lost too much frame)'''
+        for track in lost_stracks:
+            if frameCount - track.end_frame > args.max_time_lost:
+                track.mark_removed()
+                crnt_removed_stracks.append(track)
+        '''sort out all tracklet data'''
+        tracked_stracks = [t for t in tracked_stracks if t.state == TrackState.Tracked]
+        tracked_stracks = joint_stracks(tracked_stracks, crnt_activated_stracks)
+        tracked_stracks = joint_stracks(tracked_stracks, crnt_refind_stracks)
+        lost_stracks = sub_stracks(lost_stracks, tracked_stracks)
+        lost_stracks.extend(crnt_lost_stracks)
+        #different with FairMoT multitracker line 369(i think line 369 is wrong)
+        lost_stracks = sub_stracks(lost_stracks, crnt_removed_stracks)
+        remove_stracks.extend(crnt_removed_stracks)
+        tracked_stracks, lost_stracks = remove_duplicate_stracks(tracked_stracks, lost_stracks)
+        '''
+        matching result
+        '''
+        output_stracks = [track for track in tracked_stracks if track.is_activated]
+        output_stracks = joint_stracks(output_stracks, lost_stracks)
+        #output_stracks = tracked_stracks
+        '''print tracking state'''
+        logger.debug('===========Frame {}=========='.format(frameCount))
+        logger.debug('Activated: {}'.format([track.track_id for track in crnt_activated_stracks]))
+        logger.debug('Refind: {}'.format([track.track_id for track in crnt_refind_stracks]))
+        logger.debug('Lost: {}'.format([track.track_id for track in crnt_lost_stracks]))
+        logger.debug('Removed: {}'.format([track.track_id for track in crnt_removed_stracks]))
+        '''
+        #--------------------------------------------tracklet section--------------------------------------------
+        '''
             
         classes, scores, boxes = classes.cpu().numpy(), scores.cpu().numpy(), boxes.cpu().numpy()
 
-    num_dets_to_consider = min(args.top_k, classes.shape[0])
+    num_dets_to_consider = min(args.top_k, len(output_stracks))
+    
+    
     for j in range(num_dets_to_consider):
         '''
         此段原本應該是多餘(因為在postprocess就會濾掉)
@@ -391,12 +599,15 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             num_dets_to_consider = j
             break
         '''
+        if cfg.eval_mask_branch and cfg.use_on_img_stream and args.coefDebug:
+            if output_stracks[j].track_id == args.debugID:
+                print("specified track score : " + str(output_stracks[j].score))
 
     # Quick and dirty lambda for selecting the color for a particular index
     # Also keeps track of a per-gpu color cache for maximum speed
     def get_color(j, on_gpu=None):
         global color_cache
-        color_idx = (classes[j] * 5 if class_color else j * 5) % len(COLORS)
+        color_idx = (output_stracks[j].class_id * 5 if class_color else j * 5) % len(COLORS)
         
         if on_gpu is not None and color_idx in color_cache[on_gpu]:
             return color_cache[on_gpu][color_idx]
@@ -413,23 +624,31 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         '''
         目前只有id = 1 ~ 32之物件會被調色(圖片顯示上)
         '''
+        idx = np.argsort(-np.asarray([o_strack.score for o_strack in output_stracks]))
+        output_stracks = np.asarray(output_stracks)[idx].tolist()
         paletteMask = np.zeros(( 1, h, w, 1)).astype(np.uint8)
         if num_dets_to_consider > 0:
             remainingMask = np.ones(( 1, h, w, 1)).astype(np.uint8)
-            masks = masks[:num_dets_to_consider, :, :, None].cpu().numpy().astype(np.uint8)
+            output_stracks = output_stracks[:num_dets_to_consider]
+            
             for i in range(num_dets_to_consider):
+                mask = output_stracks[i].mask[ :, :, None].astype(np.uint8)
+
                 if args.coefDebug:
-                    paletteMask = paletteMask + remainingMask*masks[i]*(ids[i]+1 if ids[i]+1 == args.debugID else 0)
-                    if ids[i]+1 == args.debugID:
-                        specifiedCoef = coefs[i]
+                    paletteMask = paletteMask + remainingMask*mask*(output_stracks[i].track_id if output_stracks[i].track_id == args.debugID else 0)
+                    if output_stracks[i].track_id == args.debugID:
+                        specifiedCoef = output_stracks[i].curr_feat
+                        #specifiedCoef = output_stracks[i].last_coef
+                        #specifiedCoef = scores[i:i+1]
                 else:
-                    paletteMask = paletteMask + remainingMask*masks[i]*(ids[i]+1 if ids[i]+1 < 33 else 0)
-                remainingMask = remainingMask - ( remainingMask * masks[i] )
+                    paletteMask = paletteMask + remainingMask*mask*(output_stracks[i].track_id if output_stracks[i].track_id < 255 else 0)
+                    remainingMask = remainingMask - ( remainingMask * mask )
         return paletteMask, specifiedCoef
     # First, draw the masks on the GPU where we can do it really fast
     # Beware: very fast but possibly unintelligible mask-drawing code ahead
     # I wish I had access to OpenGL or Vulkan but alas, I guess Pytorch tensor operations will have to suffice
     if args.display_masks and cfg.eval_mask_branch and num_dets_to_consider > 0:
+        num_dets_to_consider = min(args.top_k, len(tracked_stracks))
         
         # After this, mask is of size [num_dets, h, w, 1]
         masks = masks[:num_dets_to_consider, :, :, None]
@@ -477,7 +696,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         cv2.putText(img_numpy, fps_str, text_pt, font_face, font_scale, text_color, font_thickness, cv2.LINE_AA)
     
     if num_dets_to_consider == 0:
-        return img_numpy
+        return img_numpy, specifiedCoef
 
     if args.display_text or args.display_bboxes:
         for j in reversed(range(num_dets_to_consider)):
@@ -505,7 +724,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                 cv2.putText(img_numpy, text_str, text_pt, font_face, font_scale, text_color, font_thickness, cv2.LINE_AA)
             
     
-    return img_numpy
+    return img_numpy, specifiedCoef
 
 def prep_benchmark(dets_out, h, w):
     with timer.env('Postprocess'):
@@ -854,10 +1073,10 @@ def evalimage(net:Yolact, path:str, save_path:str=None):
     img_numpy, specifiedCoef = prep_display(preds, frame, None, None, undo_transform=False)
     if args.coefDebug:
         global frameCount, specifiedFrames
-        if specifiedCoef != None:
+        if specifiedCoef.shape[0]:
             coefFile.write(str(frameCount)+(' 1'if frameCount in specifiedFrames else ' 0'))
             for i in range(specifiedCoef.shape[0]):
-                coefFile.write(' '+str(specifiedCoef[i].item()))
+                coefFile.write(' '+str(specifiedCoef[i]))
             coefFile.write('\n')
     '''
     轉換為BGR
@@ -913,9 +1132,15 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
     ***超不會用!!!
     直接用下面方法
     '''
-    if args.coefDebug:
-        global frameCount
-        frameCount = 0
+    
+    '''記得每個stream初始化'''
+    global frameCount, tracked_stracks, lost_stracks, remove_stracks
+    frameCount = 0
+    tracked_stracks = []#正在追蹤的STrack object
+    lost_stracks = []#已經丟失的STrack object
+    remove_stracks = []#停止追蹤的STrack object
+    BaseTrack.init_id()
+    
     cfg._tmp_init_objList_mode = True
     for p in Path(input_folder).glob('*'): #read all images in input folder
         '''
@@ -930,20 +1155,19 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
         call evalimage
         '''
         evalimage(net, path, out_path)
-        if args.coefDebug:
-            frameCount += 1
+        frameCount += 1
         print(path + ' -> ' + out_path)
     print('Done.')
-def evalDAVISdatafile(net:Yolact, input_file:str, output_folder:str, data_root_dir:str = "D:/Bird/DAVIS/JPEGImages/480p/"):
+def evalDAVISdatafile(net:Yolact, input_file:str, output_folder:str, data_root_dir:str = "D:/Bird/DAVIS/"):
     if not os.path.exists(output_folder): #create output folder directory
         os.mkdir(output_folder)
     '''
     從davis evaluate學來的
     最下面直接使用前面定義的func
     '''
-    video_names = [ each_line.strip() for each_line in open(input_file, 'r').readlines() ]
+    video_names = [ each_line.strip() for each_line in open(data_root_dir+"ImageSets/2017/"+input_file, 'r').readlines() ]
     for video_name in video_names:
-        i_input_folder = os.path.join(data_root_dir, video_name)
+        i_input_folder = os.path.join(data_root_dir+"JPEGImages/480p/", video_name)
         i_output_folder = os.path.join(output_folder, video_name)
         evalimagestream( net, i_input_folder, i_output_folder)
         
@@ -1458,8 +1682,15 @@ if __name__ == '__main__':
     '''
     if args.dataset is not None:
         set_dataset(args.dataset)
-
-
+    
+    cfg.use_bbox_kalman = args.use_bbox_kalman
+    cfg.use_coef_kalman = args.use_coef_kalman
+    cfg.use_score_confidence = args.use_score_confidence
+    cfg.use_mask_bbox = args.use_mask_bbox
+    cfg.linear_coef = args.linear_coef
+    cfg.match_cls_respective = args.match_cls_respective
+    cfg.use_coef_motion_model = args.use_coef_motion_model
+    cfg.use_coef_gmm = args.use_coef_gmm
     '''
     以下為eval之成果
     '''
@@ -1509,4 +1740,25 @@ if __name__ == '__main__':
         time4 = time.time()
         print("total time = %f sec"%(time4-time3))
 
-
+    #write down setting
+    settingFile = open('setting.txt','w')
+    for arg in vars(args):
+        settingFile.write('%s = %s\n'%(arg, getattr(args,arg)) )
+    '''
+    settingFile.write('coefDebug = ' + str(args.coefDebug) + '\n')
+    settingFile.write('debugID = ' + str(args.debugID) + '\n')
+    settingFile.write('intchCoef = ' + str(args.intchCoef) + '\n')
+    settingFile.write('\n')
+    settingFile.write('basic_match_mode = ' + str(args.basic_match_mode) + '\n')
+    settingFile.write('\n')
+    settingFile.write('score threshold = ' + str(args.score_threshold) + '\n')
+    settingFile.write('max_time_lost = ' + str(args.max_time_lost) + '\n')
+    settingFile.write('use_IoU_distance = ' + str(args.use_IoU_distance) + '\n')
+    settingFile.write('coef_threshold = ' + str(args.coef_threshold) + '\n')
+    settingFile.write('sep_confirm_det = ' + str(args.sep_confirm_det) + '\n')
+    settingFile.write('use_mask_bbox = ' + str(args.use_mask_bbox) + '\n')
+    settingFile.write('fuse_maha = ' + str(args.fuse_maha) + '\n')
+    settingFile.write('use_bbox_kalman = ' + str(args.use_bbox_kalman) + '\n')
+    settingFile.write('use_coef_kalman = ' + str(args.use_coef_kalman) + '\n')
+    settingFile.write('use_score_confidence = ' + str(args.use_score_confidence) + '\n')
+    '''
