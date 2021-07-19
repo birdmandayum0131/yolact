@@ -11,9 +11,10 @@ from data import cfg, mask_type, MEANS, STD, activation_func
 from utils.augmentations import Resize
 from utils import timer
 from .box_utils import crop, sanitize_coordinates
+from skimage.filters import threshold_otsu as otsu
 
 def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
-                visualize_lincomb=False, crop_masks=True, score_threshold=0):
+                visualize_lincomb=False, crop_masks=True, score_threshold=0, use_mask_bbox = False):
     """
     Postprocesses the output of Yolact on testing mode into a format that makes sense,
     accounting for all the possible configuration settings.
@@ -34,18 +35,19 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
     
     dets = det_output[batch_idx]
     net = dets['net']
+    proto_data = dets['proto']
     dets = dets['detection']
     '''
     將輸出轉為五個
     小改一點
     '''
     if dets is None:
-        return [torch.Tensor()] * 5 # Warning, this is 5 copies of the same thing
+        return [torch.Tensor()] * 5 + [proto_data] # Warning, this is 5 copies of the same thing
     '''
     將此處移至re-id部分
     以便於控制變化的threshold
     '''
-    '''
+    
     if score_threshold > 0:
         keep = dets['score'] > score_threshold
 
@@ -54,14 +56,15 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
                 dets[k] = dets[k][keep]
         
         if dets['score'].size(0) == 0:
-            return [torch.Tensor()] * 5
-    '''
+            return [torch.Tensor()] * 5+ [proto_data]
+    
     
     # Actually extract everything from dets now
     classes = dets['class']
     boxes   = dets['box']
     scores  = dets['score']
     masks   = dets['mask']
+    
     '''
     由於將比較feature vector distance的code轉移至此函式後
     因此將此處輸出ids還原為未處理的gpu mask coefficients
@@ -72,7 +75,9 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
 
     if cfg.mask_type == mask_type.lincomb and cfg.eval_mask_branch:
         # At this points masks is only the coefficients
+        '''
         proto_data = dets['proto']
+        '''
         
         # Test flag, do not upvote
         if cfg.mask_proto_debug:
@@ -89,7 +94,6 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
 
         # Permute into the correct output shape [num_dets, proto_h, proto_w]
         masks = masks.permute(2, 0, 1).contiguous()
-
         if cfg.use_maskiou:
             with timer.env('maskiou_net'):                
                 with torch.no_grad():
@@ -97,21 +101,26 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
                     maskiou_p = torch.gather(maskiou_p, dim=1, index=classes.unsqueeze(1)).squeeze(1)
                     if cfg.rescore_mask:
                         if cfg.rescore_bbox:
+                            #scores = maskiou_p
                             scores = scores * maskiou_p
+                            
                         else:
                             scores = [scores, scores * maskiou_p]
 
         # Scale masks up to the full image
         masks = F.interpolate(masks.unsqueeze(0), (h, w), mode=interpolation_mode, align_corners=False).squeeze(0)
 
+        
         # Binarize the masks
         masks.gt_(0.5)
+        
+        
 
     
     boxes[:, 0], boxes[:, 2] = sanitize_coordinates(boxes[:, 0], boxes[:, 2], w, cast=False)
     boxes[:, 1], boxes[:, 3] = sanitize_coordinates(boxes[:, 1], boxes[:, 3], h, cast=False)
     boxes = boxes.long()
-
+    
     if cfg.mask_type == mask_type.direct and cfg.eval_mask_branch:
         # Upscale masks
         full_masks = torch.zeros(masks.size(0), h, w)
@@ -132,10 +141,50 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
             full_masks[jdx, y1:y2, x1:x2] = mask
         
         masks = full_masks
+    if use_mask_bbox:
+        rowSum = torch.sum(masks,dim=2)
+        colSum = torch.sum(masks,dim=1)
+        _ , x2 = torch.max((colSum > 0) * torch.tensor(range(colSum.shape[1])), dim=1)
+        _ , x1 = torch.max((colSum > 0) * (colSum.shape[1] - torch.tensor(range(colSum.shape[1]))), dim=1)
+        _ , y2 = torch.max((rowSum > 0) * torch.tensor(range(rowSum.shape[1])), dim=1)
+        _ , y1 = torch.max((rowSum > 0) * (rowSum.shape[1] - torch.tensor(range(rowSum.shape[1]))), dim=1)
+        scores[torch.logical_or(torch.eq(x1,x2), torch.eq(y1,y2))] = 0
+        x1, y1, x2, y2 = x1.unsqueeze(0), y1.unsqueeze(0), x2.unsqueeze(0), y2.unsqueeze(0)
+        boxes = torch.cat((x1,y1,x2,y2), dim=0).transpose(0,1)
+        
+    
+    
+    return classes, scores, boxes, masks, coefficients, proto_data
 
-    return classes, scores, boxes, masks, coefficients
+def reproduce_mask( w, h, boxes, coefs, proto_data):
+    box_tmp = boxes.clone().float()
+    box_tmp[:,0] /= w
+    box_tmp[:,2] /= w
+    box_tmp[:,1] /= h
+    box_tmp[:,3] /= h
+    masks = proto_data @ coefs.float().t()
+    masks = cfg.mask_proto_mask_activation(masks)
+    # Crop masks before upsampling because you know why
+    masks = crop(masks, box_tmp)
+    # Permute into the correct output shape [num_dets, proto_h, proto_w]
+    masks = masks.permute(2, 0, 1).contiguous()
+    # Scale masks up to the full image
+    masks = F.interpolate(masks.unsqueeze(0), (h, w), mode='bilinear', align_corners=False).squeeze(0)
 
 
+    # Binarize the masks
+    masks.gt_(0.5)
+
+    if cfg.use_mask_bbox:
+        rowSum = torch.sum(masks,dim=2)
+        colSum = torch.sum(masks,dim=1)
+        _ , x2 = torch.max((colSum > 0) * torch.tensor(range(colSum.shape[1])), dim=1)
+        _ , x1 = torch.max((colSum > 0) * (colSum.shape[1] - torch.tensor(range(colSum.shape[1]))), dim=1)
+        _ , y2 = torch.max((rowSum > 0) * torch.tensor(range(rowSum.shape[1])), dim=1)
+        _ , y1 = torch.max((rowSum > 0) * (rowSum.shape[1] - torch.tensor(range(rowSum.shape[1]))), dim=1)
+        x1, y1, x2, y2 = x1.unsqueeze(0), y1.unsqueeze(0), x2.unsqueeze(0), y2.unsqueeze(0)
+        boxes = torch.cat((x1,y1,x2,y2), dim=0).transpose(0,1)
+    return boxes, masks
     
 
 
@@ -160,9 +209,9 @@ def undo_image_transformation(img, w, h):
 
 def display_lincomb(proto_data, masks):
     out_masks = torch.matmul(proto_data, masks.t())
-    # out_masks = cfg.mask_proto_mask_activation(out_masks)
+    out_masks = cfg.mask_proto_mask_activation(out_masks)
 
-    for kdx in range(1):
+    for kdx in range(3):
         jdx = kdx + 0
         import matplotlib.pyplot as plt
         coeffs = masks[jdx, :].cpu().numpy()

@@ -1,9 +1,11 @@
 from backbone import ResNetBackbone, VGGBackbone, ResNetBackboneGN, DarkNetBackbone
 from math import sqrt
 import torch
+import seaborn
+import random
+import numpy as np
 # for DAVIS
-PALETTE = [   0,   0,   0,
-            128,   0,   0,
+PALETTE = [ 128,   0,   0,
               0, 128,   0,
             128, 128,   0,
               0,   0, 128,
@@ -35,6 +37,11 @@ PALETTE = [   0,   0,   0,
             191, 128,  64,
               0, 191,   0,
               0,   0, 191]
+PALETTE = [ 0, 0, 0] + PALETTE * 5
+PALETTE_SEABORN = np.asarray(seaborn.color_palette('husl', 20 )) * 255
+np.random.shuffle(PALETTE_SEABORN)
+PALETTE_SEABORN = np.uint8(PALETTE_SEABORN)
+PALETTE_SEABORN = PALETTE_SEABORN.flatten().tolist()
 # for making bounding boxes pretty
 COLORS = ((244,  67,  54),
           (233,  30,  99),
@@ -733,10 +740,6 @@ yolact_base_config = coco_base_config.copy({
 
     'crowd_iou_threshold': 0.7,
     
-    #32維，range(-1,1)的兩向量距離會在range(0,11.3137)之間
-    #'coefficients_dist_threshold':11.3137,
-    'coefficients_dist_threshold':0.01,
-
     'use_semantic_segmentation_loss': True,
     'use_on_img_stream': False,
 })
@@ -822,6 +825,8 @@ yolact_plus_base_config = yolact_base_config.copy({
 
     'use_maskiou': True,
     'maskiou_net': [(8, 3, {'stride': 2}), (16, 3, {'stride': 2}), (32, 3, {'stride': 2}), (64, 3, {'stride': 2}), (128, 3, {'stride': 2})],
+    'mask_proto_net': [(256, 3, {'padding': 1})] * 3 + [(None, -2, {}), (256, 3, {'padding': 1})] + [(32, 1, {})],
+    'mask_proto_crop': True,
     'maskiou_alpha': 25,
     'rescore_bbox': False,
     'rescore_mask': True,

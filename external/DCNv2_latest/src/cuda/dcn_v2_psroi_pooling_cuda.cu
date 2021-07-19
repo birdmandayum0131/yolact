@@ -31,17 +31,17 @@ inline int GET_BLOCKS(const int N)
 }
 
 template <typename T>
-__device__ T bilinear_interp(
+__device__ T bilinear_interp_cuda(
     const T *data,
     const T x,
     const T y,
     const int width,
     const int height)
 {
-  int x1 = floor(x);
-  int x2 = ceil(x);
-  int y1 = floor(y);
-  int y2 = ceil(y);
+  int x1 = floorf(x);
+  int x2 = ceilf(x);
+  int y1 = floorf(y);
+  int y2 = ceilf(y);
   T dist_x = static_cast<T>(x - x1);
   T dist_y = static_cast<T>(y - y1);
   T value11 = data[y1 * width + x1];
@@ -56,7 +56,7 @@ __device__ T bilinear_interp(
 }
 
 template <typename T>
-__global__ void DeformablePSROIPoolForwardKernel(
+__global__ void DeformablePSROIPoolForwardKernelCuda(
     const int count,
     const T *bottom_data,
     const T spatial_scale,
@@ -86,10 +86,10 @@ __global__ void DeformablePSROIPoolForwardKernel(
     // [start, end) interval for spatial sampling
     const T *offset_bottom_rois = bottom_rois + n * 5;
     int roi_batch_ind = offset_bottom_rois[0];
-    T roi_start_w = static_cast<T>(round(offset_bottom_rois[1])) * spatial_scale - 0.5;
-    T roi_start_h = static_cast<T>(round(offset_bottom_rois[2])) * spatial_scale - 0.5;
-    T roi_end_w = static_cast<T>(round(offset_bottom_rois[3]) + 1.) * spatial_scale - 0.5;
-    T roi_end_h = static_cast<T>(round(offset_bottom_rois[4]) + 1.) * spatial_scale - 0.5;
+    T roi_start_w = static_cast<T>(roundf(offset_bottom_rois[1])) * spatial_scale - 0.5;
+    T roi_start_h = static_cast<T>(roundf(offset_bottom_rois[2])) * spatial_scale - 0.5;
+    T roi_end_w = static_cast<T>(roundf(offset_bottom_rois[3]) + 1.) * spatial_scale - 0.5;
+    T roi_end_h = static_cast<T>(roundf(offset_bottom_rois[4]) + 1.) * spatial_scale - 0.5;
 
     // Force too small ROIs to be 1x1
     T roi_width = max(roi_end_w - roi_start_w, 0.1); //avoid 0
@@ -102,8 +102,8 @@ __global__ void DeformablePSROIPoolForwardKernel(
     T sub_bin_size_h = bin_size_h / static_cast<T>(sample_per_part);
     T sub_bin_size_w = bin_size_w / static_cast<T>(sample_per_part);
 
-    int part_h = floor(static_cast<T>(ph) / pooled_height * part_size);
-    int part_w = floor(static_cast<T>(pw) / pooled_width * part_size);
+    int part_h = floorf(static_cast<T>(ph) / pooled_height * part_size);
+    int part_w = floorf(static_cast<T>(pw) / pooled_width * part_size);
     int class_id = ctop / channels_each_class;
     T trans_x = no_trans ? static_cast<T>(0) : bottom_trans[(((n * num_classes + class_id) * 2) * part_size + part_h) * part_size + part_w] * trans_std;
     T trans_y = no_trans ? static_cast<T>(0) : bottom_trans[(((n * num_classes + class_id) * 2 + 1) * part_size + part_h) * part_size + part_w] * trans_std;
@@ -115,8 +115,8 @@ __global__ void DeformablePSROIPoolForwardKernel(
 
     T sum = 0;
     int count = 0;
-    int gw = floor(static_cast<T>(pw) * group_size / pooled_width);
-    int gh = floor(static_cast<T>(ph) * group_size / pooled_height);
+    int gw = floorf(static_cast<T>(pw) * group_size / pooled_width);
+    int gh = floorf(static_cast<T>(ph) * group_size / pooled_height);
     gw = min(max(gw, 0), group_size - 1);
     gh = min(max(gh, 0), group_size - 1);
 
@@ -135,7 +135,7 @@ __global__ void DeformablePSROIPoolForwardKernel(
         w = min(max(w, 0.), width - 1.);
         h = min(max(h, 0.), height - 1.);
         int c = (ctop * group_size + gh) * group_size + gw;
-        T val = bilinear_interp(offset_bottom_data + c * height * width, w, h, width, height);
+        T val = bilinear_interp_cuda(offset_bottom_data + c * height * width, w, h, width, height);
         sum += val;
         count++;
       }
@@ -146,7 +146,7 @@ __global__ void DeformablePSROIPoolForwardKernel(
 }
 
 template <typename T>
-__global__ void DeformablePSROIPoolBackwardAccKernel(
+__global__ void DeformablePSROIPoolBackwardAccKernelCuda(
     const int count,
     const T *top_diff,
     const T *top_count,
@@ -179,10 +179,10 @@ __global__ void DeformablePSROIPoolBackwardAccKernel(
     // [start, end) interval for spatial sampling
     const T *offset_bottom_rois = bottom_rois + n * 5;
     int roi_batch_ind = offset_bottom_rois[0];
-    T roi_start_w = static_cast<T>(round(offset_bottom_rois[1])) * spatial_scale - 0.5;
-    T roi_start_h = static_cast<T>(round(offset_bottom_rois[2])) * spatial_scale - 0.5;
-    T roi_end_w = static_cast<T>(round(offset_bottom_rois[3]) + 1.) * spatial_scale - 0.5;
-    T roi_end_h = static_cast<T>(round(offset_bottom_rois[4]) + 1.) * spatial_scale - 0.5;
+    T roi_start_w = static_cast<T>(roundf(offset_bottom_rois[1])) * spatial_scale - 0.5;
+    T roi_start_h = static_cast<T>(roundf(offset_bottom_rois[2])) * spatial_scale - 0.5;
+    T roi_end_w = static_cast<T>(roundf(offset_bottom_rois[3]) + 1.) * spatial_scale - 0.5;
+    T roi_end_h = static_cast<T>(roundf(offset_bottom_rois[4]) + 1.) * spatial_scale - 0.5;
 
     // Force too small ROIs to be 1x1
     T roi_width = max(roi_end_w - roi_start_w, 0.1); //avoid 0
@@ -195,8 +195,8 @@ __global__ void DeformablePSROIPoolBackwardAccKernel(
     T sub_bin_size_h = bin_size_h / static_cast<T>(sample_per_part);
     T sub_bin_size_w = bin_size_w / static_cast<T>(sample_per_part);
 
-    int part_h = floor(static_cast<T>(ph) / pooled_height * part_size);
-    int part_w = floor(static_cast<T>(pw) / pooled_width * part_size);
+    int part_h = floorf(static_cast<T>(ph) / pooled_height * part_size);
+    int part_w = floorf(static_cast<T>(pw) / pooled_width * part_size);
     int class_id = ctop / channels_each_class;
     T trans_x = no_trans ? static_cast<T>(0) : bottom_trans[(((n * num_classes + class_id) * 2) * part_size + part_h) * part_size + part_w] * trans_std;
     T trans_y = no_trans ? static_cast<T>(0) : bottom_trans[(((n * num_classes + class_id) * 2 + 1) * part_size + part_h) * part_size + part_w] * trans_std;
@@ -213,8 +213,8 @@ __global__ void DeformablePSROIPoolBackwardAccKernel(
     T diff_val = top_diff[index] / top_count[index];
     const T *offset_bottom_data = bottom_data + roi_batch_ind * channels * height * width;
     T *offset_bottom_data_diff = bottom_data_diff + roi_batch_ind * channels * height * width;
-    int gw = floor(static_cast<T>(pw) * group_size / pooled_width);
-    int gh = floor(static_cast<T>(ph) * group_size / pooled_height);
+    int gw = floorf(static_cast<T>(pw) * group_size / pooled_width);
+    int gh = floorf(static_cast<T>(ph) * group_size / pooled_height);
     gw = min(max(gw, 0), group_size - 1);
     gh = min(max(gh, 0), group_size - 1);
 
@@ -233,10 +233,10 @@ __global__ void DeformablePSROIPoolBackwardAccKernel(
         h = min(max(h, 0.), height - 1.);
         int c = (ctop * group_size + gh) * group_size + gw;
         // backward on feature
-        int x0 = floor(w);
-        int x1 = ceil(w);
-        int y0 = floor(h);
-        int y1 = ceil(h);
+        int x0 = floorf(w);
+        int x1 = ceilf(w);
+        int y0 = floorf(h);
+        int y1 = ceilf(h);
         T dist_x = w - x0, dist_y = h - y0;
         T q00 = (1 - dist_x) * (1 - dist_y);
         T q01 = (1 - dist_x) * dist_y;
@@ -315,16 +315,16 @@ dcn_v2_psroi_pooling_cuda_forward(const at::Tensor &input,
   dim3 block(512);
 
   AT_DISPATCH_FLOATING_TYPES(input.type(), "dcn_v2_psroi_pooling_cuda_forward", [&] {
-    DeformablePSROIPoolForwardKernel<scalar_t><<<grid, block, 0, stream>>>(
+    DeformablePSROIPoolForwardKernelCuda<scalar_t><<<grid, block, 0, stream>>>(
         out_size,
-        input.contiguous().data<scalar_t>(),
+        input.contiguous().data_ptr<scalar_t>(),
         spatial_scale,
         channels,
         height, width,
         pooled_height,
         pooled_width,
-        bbox.contiguous().data<scalar_t>(),
-        trans.contiguous().data<scalar_t>(),
+        bbox.contiguous().data_ptr<scalar_t>(),
+        trans.contiguous().data_ptr<scalar_t>(),
         no_trans,
         trans_std,
         sample_per_part,
@@ -333,8 +333,8 @@ dcn_v2_psroi_pooling_cuda_forward(const at::Tensor &input,
         part_size,
         num_classes,
         channels_each_class,
-        out.data<scalar_t>(),
-        top_count.data<scalar_t>());
+        out.data_ptr<scalar_t>(),
+        top_count.data_ptr<scalar_t>());
   });
   THCudaCheck(cudaGetLastError());
   return std::make_tuple(out, top_count);
@@ -389,10 +389,10 @@ dcn_v2_psroi_pooling_cuda_backward(const at::Tensor &out_grad,
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES(out_grad.type(), "dcn_v2_psroi_pooling_cuda_backward", [&] {
-    DeformablePSROIPoolBackwardAccKernel<scalar_t><<<grid, block, 0, stream>>>(
+    DeformablePSROIPoolBackwardAccKernelCuda<scalar_t><<<grid, block, 0, stream>>>(
         out_size,
-        out_grad.contiguous().data<scalar_t>(),
-        top_count.contiguous().data<scalar_t>(),
+        out_grad.contiguous().data_ptr<scalar_t>(),
+        top_count.contiguous().data_ptr<scalar_t>(),
         num_bbox,
         spatial_scale,
         channels,
@@ -401,11 +401,11 @@ dcn_v2_psroi_pooling_cuda_backward(const at::Tensor &out_grad,
         pooled_height,
         pooled_width,
         output_dim,
-        input_grad.contiguous().data<scalar_t>(),
-        trans_grad.contiguous().data<scalar_t>(),
-        input.contiguous().data<scalar_t>(),
-        bbox.contiguous().data<scalar_t>(),
-        trans.contiguous().data<scalar_t>(),
+        input_grad.contiguous().data_ptr<scalar_t>(),
+        trans_grad.contiguous().data_ptr<scalar_t>(),
+        input.contiguous().data_ptr<scalar_t>(),
+        bbox.contiguous().data_ptr<scalar_t>(),
+        trans.contiguous().data_ptr<scalar_t>(),
         no_trans,
         trans_std,
         sample_per_part,

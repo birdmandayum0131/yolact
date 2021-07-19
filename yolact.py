@@ -581,7 +581,10 @@ class Yolact(nn.Module):
             if key.startswith('fpn.downsample_layers.'):
                 if cfg.fpn is not None and int(key.split('.')[2]) >= cfg.fpn.num_downsample:
                     del state_dict[key]
-        self.load_state_dict(state_dict)
+        try:
+            self.load_state_dict(state_dict)
+        except RuntimeError as e:
+            print('Ignoring "' + str(e) + '"')
     '''
     定義training stage時
     初始化weight之method
@@ -959,6 +962,7 @@ class Yolact(nn.Module):
             confidence score and locations, as the predicted masks.
             其實就是NMS
             """
+            
             return self.detect(pred_outs, self) 
 
 '''
