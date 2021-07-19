@@ -134,7 +134,7 @@ def parse_args(argv=None):
     '''
     parser.add_argument('--video_multiframe', default=1, type=int, 
                         help='The number of frames to evaluate in parallel to make videos play at higher fps.')
-    parser.add_argument('--score_threshold', default=0.45, type=float, #0.45
+    parser.add_argument('--score_threshold', default=0.1, type=float, #0.45
                         help='Detections with a score under this threshold will not be considered. This currently only works in display mode.')
     parser.add_argument('--dataset', default=None, type=str,
                         help='If specified, override the dataset specified in the config with this one (example: coco2017_dataset).')
@@ -154,8 +154,9 @@ def parse_args(argv=None):
     會將↓↓↓↓↓指定的coefficient output至檔案
     '''
     parser.add_argument('--coefDebug', default=False, dest='coefDebug', action='store_true', help='active coefficients debug mode')
-    parser.add_argument('--debugID', default=0, type=int, help='the object ID which you want to focus on')
-    parser.add_argument('--debugFileName', default=None, type=str, help='the file that stores the specified object coefficients')
+    #parser.add_argument('--debugID', default=0, type=int, help='the object ID which you want to focus on')
+    parser.add_argument('--gtID', default=0, type=int, help='the Ground Truth object ID which you want to focus on')
+    #parser.add_argument('--debugFileName', default=None, type=str, help='the file that stores the specified object coefficients')
     parser.add_argument('--intchCoef', default=False, dest='intchCoef', action='store_true', help='active interchange coefficients debug mode')
     '''
     我加的
@@ -163,12 +164,12 @@ def parse_args(argv=None):
     '''
     parser.add_argument('--max_time_lost', default=3, type=int, help='if a tracklet lost frames that more than this number, it will be removed')
     parser.add_argument('--use_IoU_distance', default=True, type=str2bool, help='use IoU to perform the second matching section')
-    parser.add_argument('--coef_threshold', default=0.1, type=float, help='coef similarity matching threshold(any two track have distance "longer" than this value will be separate)')
+    parser.add_argument('--coef_threshold', default=0.4, type=float, help='coef similarity matching threshold(any two track have distance "longer" than this value will be separate)')
     parser.add_argument('--basic_match_mode', default=False, type=str2bool, help='use basic coef distance matching rule to inference')
     parser.add_argument('--sep_confirm_det', default=True, type=str2bool, help='matching distance between confirmed/unconfirmed tracklet and detection separately')
     parser.add_argument('--use_mask_bbox', default=True, type=str2bool, help='use mask to calculate better bounding box')
     parser.add_argument('--fuse_maha', default=False, type=str2bool, help='fuse distance with mahalanobis gating distance')
-    parser.add_argument('--fuse_iou', default=True, type=str2bool, help='fuse embedding distance with iou distance')
+    parser.add_argument('--fuse_iou', default=False, type=str2bool, help='fuse embedding distance with iou distance')
     parser.add_argument('--use_bbox_kalman', default=True, dest='use_bbox_kalman', action='store_true', help='use FairMoT kalman filter to refine bounding box')
     parser.add_argument('--use_coef_kalman', default=False, dest='use_coef_kalman', action='store_true', help='use filterpy kalman filter to refine coefficients')
     parser.add_argument('--use_score_confidence', default=False, dest='use_score_confidence', action='store_true', help='use confidience score to estimate measurement uncertainty/noise and Process uncertainty/noise (P and Q)')
@@ -209,6 +210,8 @@ targetB = "-0.84978116 0.9993366 0.4927853 0.78351974 -0.08754228 -0.95587176 0.
 targetA = "-0.6959238 0.5996523 0.7367556 -0.37150833 -0.15145104 -0.52293694 0.93600756 0.1872456 0.58935213 0.43319765 0.10295015 -0.9816708 -0.056961227 -0.23823825 0.920799 0.9600848 0.21750794 0.49340916 0.22230512 -0.7187691 0.983567 0.49103805 -0.91508555 -0.9923941 -0.118909255 0.2365543 -0.37181866 0.24728283 -0.6207863 -0.9746275 0.06892245 0.8495707"
 targetCoef = torch.tensor([float(i) for i in targetA.split()])
 substituteCoef = torch.tensor([float(i) for i in targetB.split()])
+streamName = ""
+debugID = [5,13]
 '''
 add from FairMoT
 模仿JDETracker之field
@@ -588,7 +591,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
 
     num_dets_to_consider = min(args.top_k, len(output_stracks))
     
-    
+    global debugID
     for j in range(num_dets_to_consider):
         '''
         此段原本應該是多餘(因為在postprocess就會濾掉)
@@ -600,7 +603,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             break
         '''
         if cfg.eval_mask_branch and cfg.use_on_img_stream and args.coefDebug:
-            if output_stracks[j].track_id == args.debugID:
+            if output_stracks[j].track_id in debugID:
                 print("specified track score : " + str(output_stracks[j].score))
 
     # Quick and dirty lambda for selecting the color for a particular index
@@ -635,10 +638,10 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                 mask = output_stracks[i].mask[ :, :, None].astype(np.uint8)
 
                 if args.coefDebug:
-                    paletteMask = paletteMask + remainingMask*mask*(output_stracks[i].track_id if output_stracks[i].track_id == args.debugID else 0)
-                    if output_stracks[i].track_id == args.debugID:
-                        specifiedCoef = output_stracks[i].curr_feat
-                        #specifiedCoef = output_stracks[i].last_coef
+                    paletteMask = paletteMask + remainingMask*mask*(output_stracks[i].track_id if output_stracks[i].track_id in debugID else 0)
+                    if output_stracks[i].track_id in debugID and not output_stracks[i].state == TrackState.Lost:
+                        #specifiedCoef = output_stracks[i].curr_feat
+                        specifiedCoef = output_stracks[i].last_coef
                         #specifiedCoef = scores[i:i+1]
                 else:
                     paletteMask = paletteMask + remainingMask*mask*(output_stracks[i].track_id if output_stracks[i].track_id < 255 else 0)
@@ -1072,7 +1075,7 @@ def evalimage(net:Yolact, path:str, save_path:str=None):
     '''
     img_numpy, specifiedCoef = prep_display(preds, frame, None, None, undo_transform=False)
     if args.coefDebug:
-        global frameCount, specifiedFrames
+        global frameCount, specifiedFrames, coefFile
         if specifiedCoef.shape[0]:
             coefFile.write(str(frameCount)+(' 1'if frameCount in specifiedFrames else ' 0'))
             for i in range(specifiedCoef.shape[0]):
@@ -1132,14 +1135,24 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
     ***超不會用!!!
     直接用下面方法
     '''
-    
     '''記得每個stream初始化'''
-    global frameCount, tracked_stracks, lost_stracks, remove_stracks
+    global frameCount, tracked_stracks, lost_stracks, remove_stracks, streamName
     frameCount = 0
     tracked_stracks = []#正在追蹤的STrack object
     lost_stracks = []#已經丟失的STrack object
     remove_stracks = []#停止追蹤的STrack object
     BaseTrack.init_id()
+    
+    '''
+    coefDebug setup
+    '''
+    streamName = os.path.basename(input_folder)
+    if args.coefDebug:
+        global coefFile
+        coefFile = open(streamName+'_'+str(args.gtID)+'.txt', 'w')
+        coefFile.write(streamName+'\n')
+        coefFile.write(str(debugID)+'\n')
+        coefFile.write(str(args.gtID)+'\n')
     
     cfg._tmp_init_objList_mode = True
     for p in Path(input_folder).glob('*'): #read all images in input folder
@@ -1646,11 +1659,7 @@ def print_maps(all_maps):
 
 if __name__ == '__main__':
     parse_args()
-    '''
-    coefDebug setup
-    '''
-    if args.coefDebug:
-        coefFile = open(args.debugFileName, 'w')
+    
     '''
     load model
     似乎可以訓練中途eval ?

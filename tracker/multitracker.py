@@ -78,7 +78,7 @@ class STrack(BaseTrack):
     def activate(self, kalman_filter, frame_id):
         """Start a new tracklet"""
         self.kalman_filter = kalman_filter
-        self.track_id = self.next_id()
+        self.track_id = 0#self.next_id()
         if cfg.use_bbox_kalman:
             self.mean, self.covariance = self.kalman_filter.initiate(self.tlwh_to_xyah(self._tlwh))
             
@@ -107,6 +107,7 @@ class STrack(BaseTrack):
         self.state = TrackState.Tracked
         if frame_id == 0:
             self.is_activated = True
+            self.track_id = self.next_id()
         #self.is_activated = True
         self.frame_id = frame_id
         self.start_frame = frame_id
@@ -195,8 +196,9 @@ class STrack(BaseTrack):
         if cfg.use_bbox_kalman:
             self.mean, self.covariance = self.kalman_filter.update( self.mean, self.covariance, self.tlwh_to_xyah(new_tlwh))
         self.state = TrackState.Tracked
-        if self.tracklet_len >= 3:
+        if self.tracklet_len == 3 and self.is_activated != True:
             self.is_activated = True
+            self.track_id = self.next_id()
         
         self.score = new_track.score
 
