@@ -3,26 +3,39 @@ import numpy as np
 import cv2
 import torch
 import math
+from data import cfg
 from PIL import Image
 from utils.augmentations import FastBaseTransform
 from yolact import Yolact
+import torch.utils.data as data
 from torch.utils.data import DataLoader
 from coefTracker import coefPredictNet_v1
 from layers.output_utils import reproduce_mask
 import torch.nn.functional as F
-
+import torch.nn as nn
+import argparse
+import torch.optim as optim
+import pdb
+import time
 save_folder = "CTweights/"
-yolact_weight = 'weights/yolact_base_54_800000.pth'
+yolact_weight = 'weights/yolact_plus_base_54_800000.pth'
 default_davis_root = 'D:/Bird/DAVIS'
-default_coef_path = 'train_coef/'
+default_coef_path = 'coef_traing_set/'
+torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
-args = parser.parse_args()
+parser = argparse.ArgumentParser()
+parser.add_argument('--start_iter', default=0, type=int, 
+                    help='Resume training at this iter. If this is -1, the iteration will be'\
+                         'determined from the file name.')
+parser.add_argument('--save_interval', default=10000, type=int,
+                    help='The number of iterations between saving the model.')
 parser.add_argument('--lr', '--learning_rate', default=None, type=float,
                     help='Initial learning rate. Leave as None to read this from the config.')
 parser.add_argument('--momentum', default=None, type=float,
                     help='Momentum for SGD. Leave as None to read this from the config.')
 parser.add_argument('--decay', '--weight_decay', default=None, type=float,
                     help='Weight decay for SGD. Leave as None to read this from the config.')
+args = parser.parse_args()
 
 class DAVIScoefDataset(data.Dataset):
     def __init__(self, davis_root, coef_path):
@@ -35,19 +48,19 @@ class DAVIScoefDataset(data.Dataset):
         for coefFile in os.listdir(coef_path):
             filePath = os.path.join(coef_path, coefFile)
             file = open(filePath, 'r')
-            seqName = fileA.readline().rstrip('\n')
-            _ = fileA.readline() #tracking ID
-            gtID = int(fileA.readline())
-            firstCoef = fileA.readline()
+            seqName = file.readline().rstrip('\n')
+            _ = file.readline() #tracking ID
+            gtID = int(file.readline())
+            firstCoef = file.readline()
             firstCoef = np.array(firstCoef.split()[2:]).astype(float)
-            secondCoef = fileA.readline()
+            secondCoef = file.readline()
             while secondCoef:
                 secondCoef = secondCoef.split()
                 frameID = int(secondCoef[0])
                 secondCoef = np.array(secondCoef[2:]).astype(float)
                 dataList.append((seqName, gtID, frameID, firstCoef, secondCoef))
                 firstCoef = secondCoef
-                secondCoef = fileA.readline()
+                secondCoef = file.readline()
         return dataList
         
     def __len__(self):
@@ -65,13 +78,13 @@ class DAVIScoefDataset(data.Dataset):
         gtImage = torch.tensor(gtImage).cuda()
         rowSum = torch.sum(gtImage,dim=1)
         colSum = torch.sum(gtImage,dim=0)
-        _ , x2 = torch.max((colSum > 0) * torch.tensor(range(colSum.shape[0])), dim=0)
-        _ , x1 = torch.max((colSum > 0) * (colSum.shape[0] - torch.tensor(range(colSum.shape[0]))), dim=0)
-        _ , y2 = torch.max((rowSum > 0) * torch.tensor(range(rowSum.shape[0])), dim=0)
-        _ , y1 = torch.max((rowSum > 0) * (rowSum.shape[0] - torch.tensor(range(rowSum.shape[0]))), dim=0)
-        boxes = torch.cat((x1,y1,x2,y2), dim=0).transpose(0,1)
+        _ , x2 = torch.max((colSum > 0) * torch.tensor(range(colSum.shape[0])).cuda(), dim=0)
+        _ , x1 = torch.max((colSum > 0) * (colSum.shape[0] - torch.tensor(range(colSum.shape[0])).cuda()), dim=0)
+        _ , y2 = torch.max((rowSum > 0) * torch.tensor(range(rowSum.shape[0])).cuda(), dim=0)
+        _ , y1 = torch.max((rowSum > 0) * (rowSum.shape[0] - torch.tensor(range(rowSum.shape[0])).cuda()), dim=0)
+        boxes = torch.cat((x1.unsqueeze(0),y1.unsqueeze(0),x2.unsqueeze(0),y2.unsqueeze(0)), dim=0)
         
-        return jpegImage, (gtImage, boxes, np1stcoef, np2ndcoef)
+        return jpegImage, gtImage.float(), boxes, np1stcoef, np2ndcoef
 
 def simpleBCEloss(w, h, gt_box, proto_data, coef, gt_mask):
     box_tmp = gt_box.clone().float()
@@ -79,17 +92,22 @@ def simpleBCEloss(w, h, gt_box, proto_data, coef, gt_mask):
     box_tmp[:,2] /= w
     box_tmp[:,1] /= h
     box_tmp[:,3] /= h
+    
     pred_masks = proto_data @ coef.t()
     pred_masks = cfg.mask_proto_mask_activation(pred_masks)
+    pred_masks = pred_masks.permute(2, 0, 1).contiguous()
     pred_masks = F.interpolate(pred_masks.unsqueeze(0), (h, w), mode='bilinear', align_corners=False).squeeze(0)
-    loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), torch.clamp(mask_t, 0, 1), reduction='none')
-    return loss
+    pred_masks = pred_masks.permute(1, 2, 0).contiguous()
+    
+    loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), torch.clamp(gt_mask, 0, 1), reduction='none')
+    return loss.sum()/w/h
     
 def train():
     '''建立存檔資料夾'''
     if not os.path.exists(save_folder):
         os.mkdir(save_folder)
-    
+        
+    last_time = time.time()
     dataset = DAVIScoefDataset(default_davis_root, default_coef_path)
     net = Yolact()
     net.load_weights(yolact_weight)
@@ -102,9 +120,7 @@ def train():
     coefNet = coefNet.cuda()
     coefNet.train()
     
-    optimizer = optim.SGD(coefPredictNet_v1.parameters(), lr=args.lr, momentum=args.momentum,weight_decay=args.decay)
-    
-    criterion
+    optimizer = optim.SGD(coefNet.parameters(), lr=cfg.lr, momentum=cfg.momentum,weight_decay=cfg.decay)
     
     max_iter = 10000
     iteration = 0
@@ -112,31 +128,48 @@ def train():
     num_epochs = math.ceil(max_iter / epoch_size)
     
     data_loader = DataLoader(dataset, batch_size=1)
-    save_path = "coefNet_"
+    fileformat = "coefNet_%d_%d_%.3f" #epoch, iteration, loss
     
     
     print('Begin training!')
     print()
-    for epoch in range(num_epochs):
-        for datum in data_loader:
-            if iteration == cfg.max_iter:
-                break
-            iteration += 1
-            optimizer.zero_grad()
-            jpegImage, gtImage, gtbox, np1stcoef, np2ndcoef = datum
-            ###############################################
-            import pdb
-            pdb.set_trace()
-            jpegImage = FastBaseTransform()(jpegImage.unsqueeze(0))
-            dets = net(jpegImage)
-            proto = dets[0]['proto']
-            coef1 = torch.from_numpy(np1stcoef).unsqueeze(0).cuda()
-            coef2 = torch.from_numpy(np2ndcoef).unsqueeze(0).cuda()
-            refineCoef = coefNet(coef1, coef2)
-            _ , new_mask = simpleBCEloss(gtImage.shape[1], gtImage.shape[0], gtbox, proto, refineCoef, gtbox.unsqueeze(2))
-            
-            
-            
+    try:
+        loss = torch.zeros(1)
+        for epoch in range(num_epochs):
+            totalLoss = 0
+            for datum in data_loader:
+                if iteration == cfg.max_iter:
+                    break
+                
+                optimizer.zero_grad()
+                jpegImage, gtImage, gtbox, coef1, coef2 = datum
+                
+                jpegImage = FastBaseTransform()(jpegImage)
+                
+                dets = net(jpegImage)
+                proto = dets[0]['proto']
+                coef1 = coef1.cuda().float()
+                coef2 = coef2.cuda().float()
+                refineCoef = coefNet(coef1, coef2)
+                loss = simpleBCEloss(gtImage.shape[2], gtImage.shape[1], gtbox, proto, refineCoef, gtImage.permute(1, 2, 0).contiguous())
+                loss.backward()
+                if torch.isfinite(loss).item():
+                    optimizer.step()
+                    
+                iteration += 1
+                totalLoss += loss.item()
+                
+                if iteration % args.save_interval == 0 and iteration != args.start_iter:
+                    save_path = fileformat%(epoch, iteration, loss.item())
+                    coefNet.save_weights(os.path.join(save_folder, save_path))
+            cur_time  = time.time()
+            elapsed   = cur_time - last_time
+            last_time = cur_time
+            print("loss : %.3f || timer : %.3f"%(totalLoss, elapsed))
+    except KeyboardInterrupt:
+        save_path = fileformat%(epoch, iteration, loss.item())
+        coefNet.save_weights(os.path.join(save_folder, save_path))
+        
 if __name__ == '__main__':
     train()
     
