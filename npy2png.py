@@ -3,7 +3,7 @@ from PIL import Image
 import os
 imageSize = (480,480)
 dir="./scripts/"#npy檔案路徑
-dest_dir="./prototypes/boxing_1/"
+dest_dir="./prototypes/motorbike/"
 def npy2png(dir,dest_dir):
     if os.path.exists(dir)==False:
         os.makedirs(dir)

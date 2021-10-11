@@ -28,6 +28,7 @@ from PIL import Image
 
 import matplotlib.pyplot as plt
 import cv2
+import trainCoef
 '''
 使用FairMoT製作的Track Object
 '''
@@ -40,6 +41,7 @@ from tracking_utils.kalman_filter import KalmanFilter
 from filterpy.kalman import KalmanFilter as fpy_KalmanFilter
 from tracker.basetrack import TrackState ,BaseTrack
 from tracking_utils.log import logger
+from coefTracker import *
 
 def str2bool(v): #判斷cmd輸入args的布林值
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -178,6 +180,9 @@ def parse_args(argv=None):
     parser.add_argument('--assignment_stragegy', default='linear', type=str, help='use linear/greedy assignment rule on matching state')
     parser.add_argument('--use_coef_motion_model', default=False, dest='use_coef_motion_model', action='store_true', help='use coef velocity to construct a motion model')
     parser.add_argument('--use_coef_gmm', default=False, dest='use_coef_gmm', action='store_true', help='use GMM to modeling coefficients')
+    parser.add_argument('--coefPredictNet', default=True, dest='coefPredictNet', action='store_true', help='use coefPredictNet to predict next coefficients')
+    parser.add_argument('--coefRefineNet', default=False, dest='coefRefineNet', action='store_true', help='use coefRefineNet to refine current coefficients')
+    parser.add_argument('--expand_xyah_vector', default=True, dest='expand_xyah_vector', action='store_true', help='expand embedding feature with xyah vector')
     global args
     args = parser.parse_args(argv)
 
@@ -211,7 +216,10 @@ targetA = "-0.6959238 0.5996523 0.7367556 -0.37150833 -0.15145104 -0.52293694 0.
 targetCoef = torch.tensor([float(i) for i in targetA.split()])
 substituteCoef = torch.tensor([float(i) for i in targetB.split()])
 streamName = ""
-debugID = [5,13]
+debugID = [1]
+coefTracker_path = 'CTweights/V9_AdamW_cdist/coefNetV9_6210_5000000_256.496.pth'
+coefNet = None
+settingFile = None
 '''
 add from FairMoT
 模仿JDETracker之field
@@ -283,6 +291,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
     將比較feature vector distance的code轉移到這裡來
     '''
     specifiedCoef = np.zeros(0)
+    specifiedScore = None
     def calc_object_id(dets):
         def cosSim_matrix(a, b, eps=1e-8):
             """
@@ -439,11 +448,15 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         if dets_out[0]['detection'] is None:
             detections = []
         else:
-            detections = [STrack(detection[0], detection[1], STrack.tlbr_to_tlwh(detection[2]), detection[3], detection[4]) for detection in zip(classes.cpu().numpy(), scores.cpu().numpy(), boxes.cpu().numpy(), masks.cpu().numpy(), coefs.cpu().numpy())]
+            global coefNet
+            detections = [STrack(detection[0], detection[1], STrack.tlbr_to_tlwh(detection[2]), detection[3], detection[4], coefNet) for detection in zip(classes.cpu().numpy(), scores.cpu().numpy(), boxes.cpu().numpy(), masks.cpu().numpy(), coefs.cpu().numpy())]
         '''
         unconfirmed tracklet(not match in two consecutive frame) will have low priority in match section
         '''
-
+        updateProtos = protos
+        if args.coefRefineNet:
+            
+        
         unconfirmed = []
         confirmed = []
         if args.assignment_stragegy=='greedy': assignment_func = matching.greedy_assignment
@@ -461,12 +474,13 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         # use kalman filter to predict current state from previous frame
         if cfg.use_bbox_kalman:
             STrack.multi_predict(strack_pool)
-        if cfg.use_coef_kalman and cfg.linear_coef:
+        if args.coefPredictNet:
             for track in strack_pool:
                 track.predict_coef()
         for track in strack_pool:
             '''predict next mask'''
             noise = track.predict_mask(protos)
+        
         dists = matching.embedding_distance(strack_pool, detections)
         '''fuse mahalanobis distance'''
         if args.fuse_maha:
@@ -531,7 +545,11 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         '''third matching section - match unconfirmed tracks'''
         if args.sep_confirm_det:
             detections = [detections[i] for i in u_detection]
+            
             dists = matching.mask_iou_distance(unconfirmed, detections)
+            '''
+            dists = matching.embedding_distance(unconfirmed, detections)
+            '''
             if args.fuse_iou:
                 emb_dists = matching.embedding_distance(unconfirmed, detections)
                 dists = matching.fuse_maskiou(emb_dists,dists,iou_threshold=0.5)
@@ -642,11 +660,12 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                     if output_stracks[i].track_id in debugID and not output_stracks[i].state == TrackState.Lost:
                         #specifiedCoef = output_stracks[i].curr_feat
                         specifiedCoef = output_stracks[i].last_coef
-                        #specifiedCoef = scores[i:i+1]
+                        specifiedScore = output_stracks[i].score
+                        
                 else:
                     paletteMask = paletteMask + remainingMask*mask*(output_stracks[i].track_id if output_stracks[i].track_id < 255 else 0)
                     remainingMask = remainingMask - ( remainingMask * mask )
-        return paletteMask, specifiedCoef
+        return paletteMask, specifiedCoef, specifiedScore
     # First, draw the masks on the GPU where we can do it really fast
     # Beware: very fast but possibly unintelligible mask-drawing code ahead
     # I wish I had access to OpenGL or Vulkan but alas, I guess Pytorch tensor operations will have to suffice
@@ -1073,11 +1092,12 @@ def evalimage(net:Yolact, path:str, save_path:str=None):
     '''
     將mask與origial image合成
     '''
-    img_numpy, specifiedCoef = prep_display(preds, frame, None, None, undo_transform=False)
+    img_numpy, specifiedCoef, score = prep_display(preds, frame, None, None, undo_transform=False)
     if args.coefDebug:
         global frameCount, specifiedFrames, coefFile
         if specifiedCoef.shape[0]:
-            coefFile.write(str(frameCount)+(' 1'if frameCount in specifiedFrames else ' 0'))
+            #coefFile.write(str(frameCount)+(' 1'if frameCount in specifiedFrames else ' 0'))
+            coefFile.write(str(frameCount)+' '+str(score))
             for i in range(specifiedCoef.shape[0]):
                 coefFile.write(' '+str(specifiedCoef[i]))
             coefFile.write('\n')
@@ -1128,7 +1148,8 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
     cfg.use_on_img_stream = True
     if not os.path.exists(output_folder): #create output folder directory
         os.mkdir(output_folder)
-
+    global settingFile
+    settingFile = open(os.path.join(output_folder,'setting.txt'),'w')
     '''
     Path = class generator from pathlib(python library)
     a library to instead os.path
@@ -1174,6 +1195,8 @@ def evalimagestream(net:Yolact, input_folder:str, output_folder:str):
 def evalDAVISdatafile(net:Yolact, input_file:str, output_folder:str, data_root_dir:str = "D:/Bird/DAVIS/"):
     if not os.path.exists(output_folder): #create output folder directory
         os.mkdir(output_folder)
+    global settingFile
+    settingFile = open(os.path.join(output_folder,'setting.txt'),'w')
     '''
     從davis evaluate學來的
     最下面直接使用前面定義的func
@@ -1700,6 +1723,7 @@ if __name__ == '__main__':
     cfg.match_cls_respective = args.match_cls_respective
     cfg.use_coef_motion_model = args.use_coef_motion_model
     cfg.use_coef_gmm = args.use_coef_gmm
+    cfg.expand_xyah_vector = args.expand_xyah_vector
     '''
     以下為eval之成果
     '''
@@ -1736,6 +1760,10 @@ if __name__ == '__main__':
         net = Yolact()
         net.load_weights(args.trained_model)
         net.eval()
+        coefNet = coefPredictNet_v9()
+        coefNet.load_weights(coefTracker_path)
+        coefNet = coefNet.cuda()
+        coefNet.eval()
         print(' Done.')
 
 
@@ -1750,9 +1778,10 @@ if __name__ == '__main__':
         print("total time = %f sec"%(time4-time3))
 
     #write down setting
-    settingFile = open('setting.txt','w')
+    
     for arg in vars(args):
         settingFile.write('%s = %s\n'%(arg, getattr(args,arg)) )
+    settingFile.close()
     '''
     settingFile.write('coefDebug = ' + str(args.coefDebug) + '\n')
     settingFile.write('debugID = ' + str(args.debugID) + '\n')

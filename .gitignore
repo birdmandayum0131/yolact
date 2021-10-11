@@ -176,3 +176,4 @@ coef/crossing_perdestrian2_1.txt
 coef/crossing_perdestrian2_2.txt
 coef/grass5.txt
 src/cython-bbox/
+*.pth

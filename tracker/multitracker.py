@@ -9,29 +9,36 @@ from filterpy.common import Q_discrete_white_noise
 from data import cfg
 from layers.output_utils import reproduce_mask
 import torch
-
-
+from coefTracker import *
+coefTracker_path = 'CTweights/V9_AdamW_cosine_v4set_extend/coefNetV9_773_400000_1.671.pth'
 class STrack(BaseTrack):
     shared_kalman = FairMoT_Kalman()
-    def __init__(self, class_id, score, tlwh, mask, temp_feat, buffer_size=30):
+    def __init__(self, class_id, score, tlwh, mask, temp_feat, coefNet, buffer_size=30):
 
         # wait activate
         self._tlwh = np.asarray(tlwh, dtype=np.float)
         self.kalman_filter = None
         self.mean, self.covariance = None, None
-        self.smooth_coef, self.coef_covariance = None, None
+        self.coef_covariance = None
         self.is_activated = False
         self.last_coef = temp_feat
-        
+        self.t0_coef = None
         self.score = score
         self.tracklet_len = 0
         self.mask = mask
         self.class_id = class_id
         
         self.curr_feat = temp_feat
+        self.matching_vector = self.curr_feat
+        self.smooth_coef = self.curr_feat
+        if cfg.expand_xyah_vector:
+            self.matching_vector = np.concatenate((self.curr_feat, self.xyah_feat()))
         #self.update_features(temp_feat)
         #self.features = deque([], maxlen=buffer_size)
         self.alpha = 0.8
+        self.coefNet = coefPredictNet_v9().cuda().eval()
+        self.coefNet.load_weights(coefTracker_path)
+        self.coefNet.init_hidden(batch_size=1)
 
 
     def update_features(self, feat):
@@ -57,9 +64,13 @@ class STrack(BaseTrack):
         '''
         if cfg.use_score_confidence:
             Q = Q * (1 - self.score) * self.alpha
-        '''
+        
         self.coef_x, self.coef_covariance = fpy_kalman.predict(self.coef_x, self.coef_covariance, self.F, self.Q)
         self.curr_feat = self.coef_x[:32]
+        '''
+        if self.tracklet_len >= 1:
+            coef = self.coefNet(torch.tensor(self.t0_coef).unsqueeze(0).cuda(), torch.tensor(self.last_coef).unsqueeze(0).cuda())
+            self.curr_feat = coef.squeeze(0).cpu().numpy()
         
 
     @staticmethod
@@ -129,16 +140,31 @@ class STrack(BaseTrack):
                 self.coef_x, self.coef_covariance, y, K, S, log_likelihood = fpy_kalman.update(self.coef_x, self.coef_covariance, new_track.curr_feat, R, self.H, return_all=True)
                 self.curr_feat = self.coef_x[:32]
             else:
-                self.curr_feat = self.curr_feat * self.alpha + new_track.curr_feat * (1 - self.alpha)
-            boxes, masks = reproduce_mask(self.mask.shape[1], self.mask.shape[0], torch.tensor(new_track.tlbr).unsqueeze(0).cuda(), torch.tensor(self.curr_feat).unsqueeze(0).cuda(), protos)
+                self.smooth_coef = self.smooth_coef * self.alpha + new_track.smooth_coef * (1 - self.alpha)
+                #self.smooth_coef = self.curr_feat[target_coef]
+                
+            '''
+            here
+            '''
+            #predict_coef = self.coefNet(torch.tensor(self.last_coef).unsqueeze(0).cuda(), torch.tensor(new_track.last_coef).unsqueeze(0).cuda())
+            #boxes, masks = reproduce_mask(self.mask.shape[1], self.mask.shape[0], torch.tensor(new_track.tlbr).unsqueeze(0).cuda(), predict_coef, protos)
+            #boxes = boxes.float().squeeze(0).cpu().numpy()
+            #new_tlwh = self.tlbr_to_tlwh(boxes)
+            #new_tlwh = new_track.tlwh
+            '''
+            here
+            '''
+            boxes, masks = reproduce_mask(self.mask.shape[1], self.mask.shape[0], torch.tensor(new_track.tlbr).unsqueeze(0).cuda(), torch.tensor(self.smooth_coef).unsqueeze(0).cuda(), protos)
             boxes = boxes.float().squeeze(0).cpu().numpy()
             new_tlwh = self.tlbr_to_tlwh(boxes)
+            
             if (new_tlwh[2] == 0) or (new_tlwh[3] == 0):
                 return 1
             
             self.mask = masks.squeeze(0).cpu().numpy()
         else:
             self.curr_feat = new_track.curr_feat
+            #self.smooth_coef = self.curr_feat[target_coef]
         
         if cfg.use_bbox_kalman:
             self.mean, self.covariance = self.kalman_filter.update( self.mean, self.covariance, self.tlwh_to_xyah(new_tlwh) )
@@ -152,6 +178,10 @@ class STrack(BaseTrack):
         
         self.class_id = new_track.class_id
         self._tlwh = new_tlwh
+        
+        #self.matching_vector = self.curr_feat
+        #if cfg.expand_xyah_vector:
+        #    self.matching_vector = np.concatenate((self.smooth_coef, self.xyah_feat()))
         return 0
 
     def update(self, new_track, frame_id, protos, update_feature=True):
@@ -182,21 +212,36 @@ class STrack(BaseTrack):
                 self.coef_x, self.coef_covariance, y, K, S, log_likelihood = fpy_kalman.update(self.coef_x, self.coef_covariance, new_track.curr_feat, R, self.H, return_all=True)
                 self.curr_feat = self.coef_x[:32]
             else:
-                self.curr_feat = self.curr_feat * self.alpha + new_track.curr_feat * (1 - self.alpha)
-            boxes, masks = reproduce_mask(self.mask.shape[1], self.mask.shape[0], torch.tensor(new_track.tlbr).unsqueeze(0).cuda(), torch.tensor(self.curr_feat).unsqueeze(0).cuda(), protos)
+                self.smooth_coef = self.smooth_coef * self.alpha + new_track.smooth_coef * (1 - self.alpha)
+                #self.smooth_coef = self.curr_feat[target_coef]
+            '''
+            here
+            '''
+            coef_34dim = self.coefNet(torch.tensor(self.last_coef).unsqueeze(0).cuda(), torch.tensor(new_track.last_coef).unsqueeze(0).cuda())
+            boxes, masks = reproduce_mask(self.mask.shape[1], self.mask.shape[0], torch.tensor(new_track.tlbr).unsqueeze(0).cuda(), torch.tensor(coef_34dim).unsqueeze(0).cuda(), protos)
             boxes = boxes.float().squeeze(0).cpu().numpy()
             new_tlwh = self.tlbr_to_tlwh(boxes)
+            
+            '''
+            here
+            '''
+            #boxes, masks = reproduce_mask(self.mask.shape[1], self.mask.shape[0], torch.tensor(new_track.tlbr).unsqueeze(0).cuda(), torch.tensor(self.smooth_coef).unsqueeze(0).cuda(), protos)
+            #boxes = boxes.float().squeeze(0).cpu().numpy()
+            #new_tlwh = self.tlbr_to_tlwh(boxes)
+            
             if (new_tlwh[2] == 0) or (new_tlwh[3] == 0):
                 return 1
             
             self.mask = masks.squeeze(0).cpu().numpy()
         else:
             self.curr_feat = new_track.curr_feat
+            #self.smooth_coef = self.curr_feat[target_coef]
+        self.t0_coef = self.last_coef
         self.last_coef = new_track.last_coef
         if cfg.use_bbox_kalman:
             self.mean, self.covariance = self.kalman_filter.update( self.mean, self.covariance, self.tlwh_to_xyah(new_tlwh))
         self.state = TrackState.Tracked
-        if self.tracklet_len == 3 and self.is_activated != True:
+        if self.tracklet_len == 1 and self.is_activated != True:
             self.is_activated = True
             self.track_id = self.next_id()
         
@@ -205,10 +250,13 @@ class STrack(BaseTrack):
         
         self.class_id = new_track.class_id
         self._tlwh = new_tlwh
+        #self.matching_vector = self.curr_feat
+        #if cfg.expand_xyah_vector:
+        #    self.matching_vector = np.concatenate((self.smooth_coef, self.xyah_feat()))
         return 0
     
     def predict_mask(self, protos):
-        boxes, masks = reproduce_mask(self.mask.shape[1], self.mask.shape[0], torch.tensor(self.tlbr).unsqueeze(0).cuda(), torch.tensor(self.curr_feat).unsqueeze(0).cuda(), protos)
+        boxes, masks = reproduce_mask(self.mask.shape[1], self.mask.shape[0], torch.tensor(self.tlbr).unsqueeze(0).cuda(), torch.tensor(self.smooth_coef).unsqueeze(0).cuda(), protos)
         boxes = boxes.float().squeeze(0).cpu().numpy()
         new_tlwh = self.tlbr_to_tlwh(boxes)
         if (new_tlwh[2] == 0) or (new_tlwh[3] == 0):
@@ -216,8 +264,16 @@ class STrack(BaseTrack):
         self.mask = masks.squeeze(0).cpu().numpy()
         self._tlwh = new_tlwh
         self.score = 0
+        if cfg.expand_xyah_vector:
+            self.matching_vector = np.concatenate((self.curr_feat, self.xyah_feat()))
         return 0
 
+    def xyah_feat(self):
+        xyah = self.to_xyah()
+        xyah[0]/=self.mask.shape[1]
+        xyah[[1,3]]/=self.mask.shape[0]
+        return xyah
+        
     @property
     # @jit(nopython=True)
     def tlwh(self):
