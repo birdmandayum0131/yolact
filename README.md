@@ -8,11 +8,11 @@
  But the GPU in my hand is only one RTX 3080, and it only support CUDA 11 up ;)
  Consider all supporting problem about runnning environment(versions about python, pytorch, cuda, GPU)
  I use:
-        GPU      :RTX 3080
-        Python   :verion 3.8
-        PyTorch  :1.7.0
-        CUDA     :11.0
-        cudnn    :8.0
+        *GPU      :RTX 3080
+        *Python   :verion 3.8
+        *PyTorch  :1.7.0
+        *CUDA     :11.0
+        *cudnn    :8.0
  in this repository.
  If you have similar environment problem to me, you might change to this [DCN verion](https://github.com/jinfagang/DCNv2_latest)
  
