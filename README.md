@@ -16,7 +16,7 @@
 * cudnn    :8.0
 
  in this repository.\
- If you have similar environment problem to me, you might change to this [DCN verion](https://github.com/jinfagang/DCNv2_latest)
+ If you have similar environment problem to me, you might change to this [DCN version](https://github.com/jinfagang/DCNv2_latest)
  
  Last, some of the code in this repo to implement tracking algorithm be like Deep SORT is refer to [ifzhang/FairMOT](https://github.com/ifzhang/FairMOT).\
  I have learned a lot from it. Thanks to their contributions too!
